@@ -1,0 +1,23 @@
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# Environment variables & secrets (CRITICAL)
+.env
+*.env.local
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# User tailored outputs / personal resumes
+tailored_resume*.md
+dev_squad_output*.md
