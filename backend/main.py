@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend import __version__
 from backend.config import AVAILABLE_MODES, runtime_settings
 from backend.database import init_db
-from backend.routers import projects, sessions, telemetry
+from backend.routers import projects, sessions, telemetry, workspace
 
 # Ensure SQLite tables and initial welcome session exist immediately on import
 init_db()
@@ -58,14 +58,9 @@ app.add_middleware(
 app.include_router(projects.router)
 app.include_router(sessions.router)
 app.include_router(telemetry.router)
+app.include_router(workspace.router)
 
 # Pluggable feature routers (mounted dynamically when available)
-try:
-    from backend.routers import workspace
-    app.include_router(workspace.router)
-except ImportError:
-    pass
-
 try:
     from backend.routers import chat
     app.include_router(chat.router)
