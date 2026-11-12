@@ -1,23 +1,50 @@
-# Virtual environment
+# =============================================================================
+# Hermes Studio v2 — Root Git Ignore Configuration
+# Tracked directories: /docs, /backend, /frontend, /legacy-streamlit
+# =============================================================================
+
+# Python virtual environments
 .venv/
 venv/
 ENV/
 
 # Environment variables & secrets (CRITICAL)
 .env
+.env.*
+!.env.example
 *.env.local
 
-# Python cache & artifacts
+# Python cache & build artifacts
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# OS-specific
+# Node.js / Next.js frontend dependencies & build caches
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+out/
+frontend/out/
+next-env.d.ts
+*.tsbuildinfo
+.vercel
+
+# Local databases & SQLite persistence
+*.db
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+
+# OS-specific metadata
 .DS_Store
 Thumbs.db
+*.log
 
-# User tailored outputs / personal resumes
+# User tailored outputs / generated local artifacts
 tailored_resume*.md
 dev_squad_output*.md
