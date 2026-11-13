@@ -190,6 +190,7 @@ class ChatResponse(BaseModel):
     """Response payload from POST /api/chat."""
 
     session_id: str
+    session_title: Optional[str] = None
     project_id: Optional[str] = ""
     mode: str
     agent_badge: str
@@ -198,6 +199,7 @@ class ChatResponse(BaseModel):
     user_message: MessageResponse
     assistant_message: MessageResponse
     agent_steps: List[AgentStep] = Field(default_factory=list)
+    actions_executed: List[Dict[str, Any]] = Field(default_factory=list)
     tokens_used: int = 0
     workspace_files_injected: List[str] = Field(default_factory=list)
     workspace_tokens_injected: int = 0

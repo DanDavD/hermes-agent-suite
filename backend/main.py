@@ -59,13 +59,7 @@ app.include_router(projects.router)
 app.include_router(sessions.router)
 app.include_router(telemetry.router)
 app.include_router(workspace.router)
-
-# Pluggable feature routers (mounted dynamically when available)
-try:
-    from backend.routers import chat
-    app.include_router(chat.router)
-except ImportError:
-    pass
+app.include_router(chat.router)
 
 
 @app.get("/api/health", tags=["health"])

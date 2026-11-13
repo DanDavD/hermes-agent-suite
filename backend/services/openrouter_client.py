@@ -129,14 +129,36 @@ async def acall_llm(
     primary_model = MODEL_REMAP.get(model, model)
     candidate_models = [primary_model] + [m for m in FALLBACK_MODELS if m != primary_model]
 
+    # Guard against 32,768-token context overflow on specialist endpoints (e.g., Qwen 2.5 Coder 32B)
+    MAX_SAFE_PROMPT_CHARS = 72000  # ~18,000 tokens
+    safe_user_prompt = user_prompt
+    if len(safe_user_prompt) > MAX_SAFE_PROMPT_CHARS:
+        safe_user_prompt = (
+            safe_user_prompt[:MAX_SAFE_PROMPT_CHARS]
+            + "\n\n[... Context truncated automatically to fit model 32k context window ...]"
+        )
+
     messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
     if conversation_history:
-        for msg in conversation_history:
+        # Keep only the most recent turns and cap total history characters
+        history_chars = 0
+        trimmed_history: List[Dict[str, str]] = []
+        for msg in reversed(conversation_history[-8:]):
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if role in ("user", "assistant") and content:
-                messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": user_prompt})
+                if history_chars + len(content) > 24000:
+                    break
+                trimmed_history.append({"role": role, "content": content})
+                history_chars += len(content)
+        messages.extend(reversed(trimmed_history))
+
+    messages.append({"role": "user", "content": safe_user_prompt})
+
+    # Ensure max_tok leaves ample room within 32,768 context limit
+    estimated_input_tok = sum(estimate_tokens_from_text(m["content"]) for m in messages)
+    if estimated_input_tok + max_tok > 28000:
+        max_tok = max(1024, min(max_tok, 28000 - estimated_input_tok))
 
     last_err: Optional[Exception] = None
     response = None
@@ -152,6 +174,24 @@ async def acall_llm(
         except Exception as err:
             last_err = err
             err_str = str(err).lower()
+            # If context length exceeded (400), compress user prompt further and retry immediately
+            if "maximum context length" in err_str or "context length" in err_str or "400" in err_str:
+                try:
+                    compressed_prompt = safe_user_prompt[:32000] + "\n\n[... Context compressed ...]"
+                    compressed_msgs = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": compressed_prompt},
+                    ]
+                    response = await client.chat.completions.create(
+                        model=candidate,
+                        messages=compressed_msgs,
+                        temperature=temp,
+                        max_tokens=min(max_tok, 2048),
+                    )
+                    break
+                except Exception as retry_err:
+                    last_err = retry_err
+                    continue
             # Retry next candidate if model is 404 / no provider / unavailable
             if "404" in err_str or "no provider" in err_str or "no longer available" in err_str or "503" in err_str:
                 continue
@@ -193,7 +233,12 @@ async def run_raw_model_workflow(
         "Provide direct, production-ready, deeply technical responses and complete code implementations.\n"
         "When generating source files for the user's workspace, include a comment on the first line of the code block "
         "indicating the relative file path (e.g., `// File: Assets/Scripts/PlayerController.cs` or `# File: scripts/tool.py`) "
-        "so the user can one-click Apply it to their workspace."
+        "so the user can one-click Apply it to their workspace.\n\n"
+        "### STRICT AUTONOMY & ZERO-MANUAL-CHORES POLICY:\n"
+        "- NEVER tell the user to manually create GameObjects in the Unity Editor, attach components, or drag fields in the Inspector. "
+        "Instead, write a Unity Editor setup script (e.g. `// File: Assets/_Project/Editor/MusicSystemSetup.cs`) with `[MenuItem]` or `[InitializeOnLoadMethod]` that automates 100% of scene setup and reference linking programmatically.\n"
+        "- NEVER say 'as an AI I cannot generate binary files, go to Suno.ai'. If audio, music, or SFX is requested, provide a procedural audio synthesizer (`OnAudioFilterRead` or `AudioClip.Create`) that generates rich orchestral, war drum, or ambient audio in real time, or provide an automated Python script using standard library 'wave' to write the real `.wav` file directly into Assets/.\n"
+        "- Always respect and align with the existing project namespaces and architecture (e.g. `GameJam.Gameplay`, `GameJam.Core`, `GameJam.UI` for GodBoard) without inventing arbitrary new namespaces."
     )
     if workspace_context:
         system_prompt += (

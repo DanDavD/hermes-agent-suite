@@ -24,68 +24,8 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-WELCOME_MARKDOWN = """# Welcome to Hermes Studio v2
-
-Your local **Multi-Agent Game & Software Engineering Command Center** is online and ready.
-
-### Active Capabilities
-
-1. **Claude-Style Projects & Workspace Context Scanner (Unity C# & Full-Stack)**
-   - Organize work into dedicated **Projects** (`Web Portfolio`, `Horde Carnage`, `Hermes Suite`) and link any local macOS directory.
-   - Automatically prunes noisy folders (`Library/`, `Temp/`, `Obj/`, `Builds/`, `.git/`, `node_modules/`, `.venv/`) and injects up to **45,000 tokens** of live source code (`<workspace_file>`) into your prompt context.
-   - Click **Apply to Workspace** on generated code blocks to write files directly into your project.
-
-2. **Specialized Multi-Agent Teams & Raw Models**
-   - **`team:dev-squad`** — *Game/Soft Dev Team*: Sequential orchestration across **Leader (Architect)** -> **Code Maker (Qwen 2.5 Coder 32B)** -> **Code Reviewer** -> **UI Maker** -> **UI Reviewer**.
-   - **`team:career-hunter`** — *Career Team*: Live remote job scouting via DuckDuckGo, Reddit interview question mining, ATS resume tailoring (Google XYZ framework), and interactive mock technical interviews.
-   - **`team:content-video`** — *Content Team*: Unity Recorder C# scripts, macOS `ffmpeg` (`avfoundation` / VideoToolbox) capture pipelines, `MoviePy` auto-editing scripts, and YouTube SEO metadata.
-   - **`raw:*`** — Direct low-latency chat with **Nous Hermes 3 70B**, **Qwen 2.5 Coder 32B**, **Nous Hermes 3 8B**, or **Claude 3.5 Sonnet**.
-
----
-
-### Sample Unity C# Script (Ready to Apply)
-
-```csharp
-// File: Assets/Scripts/Core/HermesTelemetryPing.cs
-using UnityEngine;
-
-namespace HermesStudio.Core
-{
-    /// <summary>
-    /// Lightweight frame-time and memory monitor for Unity runtime diagnostics.
-    /// Zero GC allocations during Update loop.
-    /// </summary>
-    public sealed class HermesTelemetryPing : MonoBehaviour
-    {
-        [SerializeField, Range(0.1f, 5f)] private float sampleInterval = 1.0f;
-
-        private float _elapsed;
-        private int _frames;
-        private float _currentFps;
-
-        public float CurrentFps => _currentFps;
-
-        private void Update()
-        {
-            _frames++;
-            _elapsed += Time.unscaledDeltaTime;
-
-            if (_elapsed >= sampleInterval)
-            {
-                _currentFps = _frames / _elapsed;
-                _frames = 0;
-                _elapsed = 0f;
-            }
-        }
-    }
-}
-```
-
-Select a project or mode, link a local workspace folder, or enter a prompt below to begin."""
-
-
 def init_db() -> None:
-    """Initializes SQLite tables, runs seamless schema migrations, and seeds initial projects & welcome session."""
+    """Initializes SQLite tables and runs seamless schema migrations."""
     conn = get_connection()
     try:
         with conn:
@@ -150,71 +90,16 @@ def init_db() -> None:
             except sqlite3.OperationalError:
                 pass
 
-            # Seed initial 3 projects if projects table is empty
-            proj_count = conn.execute("SELECT COUNT(*) AS cnt FROM projects;").fetchone()
-            if proj_count and proj_count["cnt"] == 0:
-                now = _utc_now_iso()
-                initial_projects = [
-                    (
-                        "proj-web-portfolio",
-                        "Web Portfolio",
-                        "Personal web portfolio project",
-                        "",
-                        now,
-                        now,
-                    ),
-                    (
-                        "proj-horde-carnage",
-                        "Horde Carnage",
-                        "Unity game project",
-                        "",
-                        now,
-                        now,
-                    ),
-                    (
-                        "proj-hermes-suite",
-                        "Hermes Suite",
-                        "Hermes Studio AI engineering suite",
-                        "/Users/Damid/.gemini/antigravity/scratch/hermes-agent-suite",
-                        now,
-                        now,
-                    ),
-                ]
-                conn.executemany(
-                    """
-                    INSERT INTO projects (id, name, description, workspace_path, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?);
-                    """,
-                    initial_projects,
-                )
-
-            # Remove legacy seeded welcome messages/sessions if present
+            # Remove legacy seeded welcome messages, seeded demo projects, and empty placeholder sessions
             conn.execute(
                 "DELETE FROM messages WHERE session_id = 'welcome-session-v2' OR content LIKE '# Welcome to Hermes Studio%';"
             )
             conn.execute(
-                "UPDATE sessions SET title = 'New Chat' WHERE id = 'welcome-session-v2' AND title = 'Welcome to Hermes Studio v2';"
+                "DELETE FROM projects WHERE id IN ('proj-web-portfolio', 'proj-horde-carnage', 'proj-hermes-suite');"
             )
-
-            # Seed an initial empty chat session if sessions table is empty
-            count_row = conn.execute("SELECT COUNT(*) AS cnt FROM sessions;").fetchone()
-            if count_row and count_row["cnt"] == 0:
-                now = _utc_now_iso()
-                conn.execute(
-                    """
-                    INSERT INTO sessions (id, title, mode, workspace_path, project_id, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?);
-                    """,
-                    (
-                        str(uuid.uuid4()),
-                        "New Chat",
-                        "team:dev-squad",
-                        "",
-                        "",
-                        now,
-                        now,
-                    ),
-                )
+            conn.execute(
+                "DELETE FROM sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM messages);"
+            )
     finally:
         conn.close()
 
@@ -225,7 +110,7 @@ def init_db() -> None:
 
 
 def list_projects() -> List[Dict[str, Any]]:
-    """Returns all projects ordered by created_at ascending / updated_at with session counts."""
+    """Returns all projects ordered by updated_at descending with session counts."""
     conn = get_connection()
     try:
         rows = conn.execute(
@@ -241,14 +126,7 @@ def list_projects() -> List[Dict[str, Any]]:
             FROM projects p
             LEFT JOIN sessions s ON s.project_id = p.id
             GROUP BY p.id
-            ORDER BY
-                CASE p.id
-                    WHEN 'proj-web-portfolio' THEN 1
-                    WHEN 'proj-horde-carnage' THEN 2
-                    WHEN 'proj-hermes-suite' THEN 3
-                    ELSE 4
-                END,
-                p.created_at ASC;
+            ORDER BY p.updated_at DESC, p.created_at ASC;
             """
         ).fetchall()
         return [
