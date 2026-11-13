@@ -7,9 +7,61 @@ import WebKit
 // traffic-light positioning inside the sidebar, and hotkey bridge.
 // ==============================================================================
 
+// MARK: - Native Draggable Window Subclass (Acceptance Criterion 3)
+class HermesStudioWindow: NSWindow {
+    override var canBecomeKey: Bool { return true }
+    override var canBecomeMain: Bool { return true }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown {
+            let loc = event.locationInWindow
+            let windowHeight = self.frame.height
+            let isAtTopBar = loc.y >= (windowHeight - 44.0)
+
+            if isAtTopBar {
+                // 1. Double-click anywhere in top bar to zoom/unzoom
+                if event.clickCount == 2 && loc.x > 78 {
+                    self.performZoom(nil)
+                    return
+                }
+
+                // 2. Native traffic lights area (close, miniaturize, zoom) -> pass to native buttons
+                if loc.x <= 78 {
+                    super.sendEvent(event)
+                    return
+                }
+
+                // 3. Sidebar collapse button (approx x: 218...256, y: windowHeight - 38 ... windowHeight - 6)
+                if loc.x >= 218 && loc.x <= 256 && loc.y <= (windowHeight - 6) && loc.y >= (windowHeight - 38) {
+                    super.sendEvent(event)
+                    return
+                }
+
+                // 4. Sidebar expand button when collapsed (approx x: 80...150, y: windowHeight - 38 ... windowHeight - 6)
+                if loc.x >= 80 && loc.x <= 150 && loc.y <= (windowHeight - 6) && loc.y >= (windowHeight - 38) {
+                    super.sendEvent(event)
+                    return
+                }
+
+                // 5. Everywhere else across the top header bar: native WindowServer drag!
+                self.performDrag(with: event)
+                return
+            }
+        }
+        super.sendEvent(event)
+    }
+}
+
+// MARK: - Native Draggable Web View Subclass
+class HermesWebView: WKWebView {
+    override var mouseDownCanMoveWindow: Bool {
+        return true
+    }
+}
+
 class HermesApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
-    var window: NSWindow!
-    var webView: WKWebView!
+    var window: HermesStudioWindow!
+    var webView: HermesWebView!
     var loadingOverlay: NSVisualEffectView?
     var statusLabel: NSTextField?
     let targetURL = URL(string: "http://localhost:3000")!
@@ -36,7 +88,7 @@ class HermesApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDe
 
         let windowRect = NSRect(x: initialX, y: initialY, width: initialWidth, height: initialHeight)
 
-        window = NSWindow(
+        window = HermesStudioWindow(
             contentRect: windowRect,
             styleMask: [
                 .titled,
@@ -106,7 +158,7 @@ class HermesApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDe
         // Enable developer tools for debugging if needed
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
 
-        webView = WKWebView(frame: window.contentView!.bounds, configuration: config)
+        webView = HermesWebView(frame: window.contentView!.bounds, configuration: config)
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = self
         webView.uiDelegate = self
