@@ -34,6 +34,10 @@ next-env.d.ts
 *.tsbuildinfo
 .vercel
 
+# macOS native build artifacts
+macos/build/
+*.app/
+
 # Local databases & SQLite persistence
 *.db
 *.sqlite3
