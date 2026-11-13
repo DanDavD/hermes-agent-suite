@@ -361,57 +361,142 @@ def scan_workspace(
     }
 
 
+def _prompt_needs_full_code_dump(user_prompt: str, files: List[Dict[str, Any]]) -> bool:
+    """
+    Determines whether the user's prompt actually requires injecting full source file contents,
+    or if a lightweight file-tree summary (~200 tokens) is sufficient.
+    """
+    if not user_prompt or not user_prompt.strip():
+        return False
+
+    q = user_prompt.lower()
+
+    # Check if the user explicitly mentions any filename or script name from the workspace
+    for f in files:
+        fname = Path(f["path"]).name.lower()
+        stem = Path(f["path"]).stem.lower()
+        if fname in q or (len(stem) >= 4 and stem in q):
+            return True
+
+    # Keywords indicating the user wants to inspect, write, refactor, or debug project code
+    code_action_keywords = (
+        "refactor",
+        "script",
+        "code",
+        "implement",
+        "create",
+        "write",
+        "build",
+        "fix",
+        "bug",
+        "error",
+        "audit",
+        "review",
+        "optimize",
+        "controller",
+        "component",
+        "monobehaviour",
+        "shader",
+        "class",
+        "function",
+        "method",
+        "file",
+        "workspace",
+        "project",
+        "c#",
+        "unity",
+        "modifica",
+        "crea",
+        "arregla",
+        "codigo",
+        "código",
+        "archivo",
+    )
+
+    # Conversational / advisory questions that don't need 12,000 tokens of raw code
+    advisory_patterns = (
+        "what would be the best model",
+        "which model",
+        "best model",
+        "que modelo",
+        "qué modelo",
+        "cual modelo",
+        "cuál modelo",
+        "how much does",
+        "what is ",
+        "who is ",
+    )
+    if any(pat in q for pat in advisory_patterns):
+        return False
+
+    return any(kw in q for kw in code_action_keywords)
+
+
 def build_workspace_context(
     folder_path: str,
     selected_files: Optional[List[str]] = None,
     token_budget: int = WORKSPACE_TOKEN_BUDGET,
+    user_prompt: str = "",
 ) -> Tuple[str, List[str], int]:
     """
     Builds a structured XML/Markdown workspace context block capped at `token_budget` tokens.
+    If the user prompt is a general/advisory question, injects only the lightweight file tree (~200 tokens).
     Returns (context_string, list_of_injected_relative_paths, total_tokens_injected).
     """
-    scan = scan_workspace(folder_path, include_context=False, token_budget=token_budget)
+    effective_budget = min(token_budget, WORKSPACE_TOKEN_BUDGET)
+    scan = scan_workspace(folder_path, include_context=False, token_budget=effective_budget)
     if not scan["valid"] or not scan["files"]:
         return "", [], 0
 
     base_path = Path(scan["folder_path"])
     files: List[Dict[str, Any]] = scan["files"]
 
-    # Build file tree summary header
+    # Build lightweight file tree summary header (~150-300 tokens)
     tree_lines = [
         f"<workspace_summary path=\"{base_path}\" project_type=\"{scan['project_type']}\" total_files=\"{scan['total_files']}\">",
         "Indexed Project Files:",
     ]
-    for f in files[:250]:
+    for f in files[:80]:
         tree_lines.append(f"  - {f['path']} ({f['language']}, ~{f['estimated_tokens']} tokens)")
-    if len(files) > 250:
-        tree_lines.append(f"  ... and {len(files) - 250} more files")
+    if len(files) > 80:
+        tree_lines.append(f"  ... and {len(files) - 80} more files")
     tree_lines.append("</workspace_summary>\n")
 
     header_block = "\n".join(tree_lines)
     used_tokens = estimate_tokens_from_text(header_block)
 
-    # Filter or prioritize files
+    # If the prompt is a general question, only send the lightweight tree summary!
+    if user_prompt and not _prompt_needs_full_code_dump(user_prompt, files):
+        return header_block, [], used_tokens
+
+    # Score files by relevance to user_prompt + extension priority
+    q_lower = (user_prompt or "").lower()
+
+    def _file_sort_key(item: Dict[str, Any]) -> Tuple[int, int, str]:
+        stem = Path(item["path"]).stem.lower()
+        name_match = 0 if (len(stem) >= 3 and stem in q_lower) else 1
+        ext_prio = EXTENSION_PRIORITY.get(item["extension"], 99)
+        return (name_match, ext_prio, item["path"])
+
     selected_set = {p.strip().lstrip("/") for p in (selected_files or []) if p and p.strip()}
     if selected_set:
-        prioritized_files = [f for f in files if f["path"] in selected_set]
-        # If selected_files didn't match exact paths, also allow remaining files by priority
+        prioritized_files = sorted(
+            [f for f in files if f["path"] in selected_set],
+            key=_file_sort_key,
+        )
         remaining_files = sorted(
             [f for f in files if f["path"] not in selected_set],
-            key=lambda item: (EXTENSION_PRIORITY.get(item["extension"], 99), item["path"]),
+            key=_file_sort_key,
         )
         candidate_files = prioritized_files + remaining_files
     else:
-        candidate_files = sorted(
-            files,
-            key=lambda item: (EXTENSION_PRIORITY.get(item["extension"], 99), item["path"]),
-        )
+        candidate_files = sorted(files, key=_file_sort_key)
 
     file_blocks: List[str] = [header_block]
     injected_paths: List[str] = []
 
     for f in candidate_files:
-        if used_tokens >= token_budget:
+        if used_tokens >= effective_budget:
             break
 
         full_path = base_path / f["path"]
@@ -427,12 +512,14 @@ def build_workspace_context(
         )
         block_tokens = estimate_tokens_from_text(block)
 
-        if used_tokens + block_tokens > token_budget:
-            # If we still have room for at least 500 tokens, truncate the file gracefully
-            remaining_budget = token_budget - used_tokens
-            if remaining_budget > 500:
+        if used_tokens + block_tokens > effective_budget:
+            remaining_budget = effective_budget - used_tokens
+            if remaining_budget > 400:
                 char_allowance = remaining_budget * 4
-                truncated_content = content[:char_allowance] + "\n/* ... [Truncated to fit 45,000 token workspace budget] ... */"
+                truncated_content = (
+                    content[:char_allowance]
+                    + f"\n/* ... [Truncated to fit {effective_budget:,} token workspace budget] ... */"
+                )
                 block = (
                     f"<workspace_file path=\"{f['path']}\" language=\"{f['language']}\" truncated=\"true\">\n"
                     f"{truncated_content}\n"

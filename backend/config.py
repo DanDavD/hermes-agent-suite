@@ -163,9 +163,9 @@ DEFAULT_ROLE_MODELS: Dict[str, str] = {
     "content_seo": os.getenv("MODEL_CONTENT_SEO", RAW_MODELS["raw:deepseek-v3"]),
 }
 
-# Workspace scanner token limit (~45,000 tokens)
-WORKSPACE_TOKEN_BUDGET = 45000
-MAX_SINGLE_FILE_BYTES = 512 * 1024  # 512 KB cap per individual file
+# Workspace scanner token limit (12,000 tokens max to stay safely within 32k model context windows)
+WORKSPACE_TOKEN_BUDGET = 12000
+MAX_SINGLE_FILE_BYTES = 256 * 1024  # 256 KB cap per individual file
 
 
 class RuntimeSettings:
