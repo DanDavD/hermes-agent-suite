@@ -190,6 +190,11 @@ async def acall_llm(
 
     messages.append({"role": "user", "content": safe_user_prompt})
 
+    # Ensure reasoning models (Gemini 2.5 Pro/Flash, DeepSeek R1) have sufficient token headroom
+    # so internal thinking tokens never truncate multi-file code output mid-stream
+    if any(rm in primary_model for rm in ("gemini-2.5", "deepseek-r1")) and max_tok < 8192:
+        max_tok = 8192
+
     # Ensure max_tok leaves ample room within 32,768 context limit
     estimated_input_tok = sum(estimate_tokens_from_text(m["content"]) for m in messages)
     if estimated_input_tok + max_tok > 28000:
@@ -266,26 +271,39 @@ async def run_raw_model_workflow(
     system_prompt = (
         "You are an elite Autonomous Principal Software & Game Engineer inside Hermes Studio v2.\n"
         "You have direct write access to the user's local project workspace on disk.\n\n"
-        "### MANDATORY AUTONOMOUS DISK EDITING & TOKEN EFFICIENCY POLICY:\n"
-        "1. ALWAYS begin the very first line of EVERY file/patch code block with its relative file path:\n"
-        "   - JS/TS/C#/CSS: `// File: js/app.js` or `// File: Assets/Scripts/PlayerController.cs`\n"
-        "   - Python/Shell/YAML: `# File: backend/main.py`\n"
-        "   - HTML: `<!-- File: index.html -->`\n"
-        "   The Hermes Studio autonomous engine intercepts these blocks and writes or patches the files DIRECTLY on the user's local disk (immediately visible in GitHub Desktop).\n"
-        "2. PREFER SURGICAL `SEARCH/REPLACE` BLOCKS FOR EXISTING FILES (> 60 lines) TO SAVE TOKENS:\n"
-        "   When modifying an existing file from the workspace, DO NOT rewrite hundreds of unchanged lines. Output only the targeted `SEARCH/REPLACE` blocks:\n"
+        "### MANDATORY AUTONOMOUS DISK EDITING & ZERO-WASTE TOKEN POLICY:\n"
+        "The Hermes Studio engine intercepts your directive code blocks, applies the changes directly to the local disk (visible immediately in GitHub Desktop), and AUTOMATICALLY HIDES the code blocks from the chat UI so the user only sees your brief summary and the `N file(s) changed` bar.\n"
+        "To save tokens and guarantee 100% completion across all requested files, ALWAYS use the most compact directive:\n"
+        "1. APPENDING TO AN EXISTING FILE (comments, new methods/exports at EOF) — USE `// Append: <path>`:\n"
+        "   Output ONLY the directive header and the new line(s) to append. NEVER rewrite the rest of the file!\n"
+        "   You can even batch multiple files inside a single code block:\n"
+        "   ```csharp\n"
+        "   // Append: Assets/_Project/Scripts/Core/AssemblyInfo.cs\n"
+        "   // 67\n"
+        "   // Append: Assets/_Project/Scripts/Core/CombatReason.cs\n"
+        "   // 67\n"
+        "   // Append: README.md\n"
+        "   <!-- 67 -->\n"
+        "   ```\n"
+        "2. PREPENDING TO THE TOP OF A FILE — USE `// Prepend: <path>`:\n"
+        "   Output ONLY `// Prepend: <relative_path>` followed by the lines to insert at the top.\n"
+        "3. MODIFYING SPECIFIC LINES IN ANY EXISTING FILE — USE `// File: <path>` + `SEARCH/REPLACE`:\n"
+        "   Regardless of file size, NEVER rewrite unchanged lines of an existing file. Output only the targeted diff:\n"
         "   ```javascript\n"
         "   // File: js/store.js\n"
         "   <<<<<<< SEARCH\n"
-        "   exact existing lines from the file\n"
+        "   exact existing lines\n"
         "   =======\n"
         "   updated replacement lines\n"
         "   >>>>>>> REPLACE\n"
         "   ```\n"
-        "   When creating a brand-new file or editing a small file (<= 60 lines), output the complete file with `// File: <path>` on line 1.\n"
-        "3. NEVER OUTPUT 'BEFORE' CODE BLOCKS OR DUPLICATE SNIPPETS:\n"
-        "   - Do NOT print `Before:` code blocks or repeat old unchanged code in your explanation.\n"
-        "   - Keep your text explanation concise: state what files you modified on disk and why in 3-6 bullet points.\n\n"
+        "4. CREATING A BRAND-NEW FILE — USE `// File: <path>`:\n"
+        "   Output the complete file with `// File: <relative_path>` (or `# File:` / `<!-- File: -->`) on line 1.\n"
+        "5. DELETING A FILE — USE `// Delete: <relative_path>`.\n"
+        "6. MULTI-FILE COMPLETENESS GUARANTEE:\n"
+        "   If the user asks to edit N files (e.g., 10 files), you MUST emit a directive (`// Append:`, `// Prepend:`, or `// File:`) for ALL N files using valid paths from `<workspace_summary>`—never claim you edited a file without emitting its directive!\n"
+        "7. CONCISE TEXT SUMMARY:\n"
+        "   Keep your visible text message short and direct (state that the changes were applied to disk and list the modified files briefly). Never print 'Before:' code snippets.\n\n"
         "### STRICT AUTONOMY & ZERO-MANUAL-CHORES POLICY:\n"
         "- NEVER tell the user to manually copy-paste code or manually create GameObjects in Unity.\n"
         "- Respect existing project architecture, variable names, and namespaces."

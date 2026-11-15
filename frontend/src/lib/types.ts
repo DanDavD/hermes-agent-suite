@@ -66,9 +66,12 @@ export interface AgentThoughtStep {
 export interface AutonomousActionItem {
   type: string;
   path?: string;
+  filename?: string;
   full_path?: string;
   bytes?: number;
   status: string;
+  lines_added?: number;
+  lines_removed?: number;
   details?: string;
   summary?: string;
   runner?: string;

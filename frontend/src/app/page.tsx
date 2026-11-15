@@ -5,6 +5,7 @@ import Sidebar from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
 import BottomComposer from "@/components/BottomComposer";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
+import FilesChangedSummaryBar from "@/components/FilesChangedSummaryBar";
 import AgentStepsAccordion from "@/components/AgentStepsAccordion";
 import WorkspaceModal from "@/components/WorkspaceModal";
 import SettingsTelemetryModal from "@/components/SettingsTelemetryModal";
@@ -967,6 +968,14 @@ export default function HermesWorkstationPage() {
                         onOpenWorkspaceModal={() => setWorkspaceModalOpen(true)}
                         onFileApplied={handleFileApplied}
                       />
+
+                      {/* Bottom Files Changed Summary Bar (+green / -red with expandable file submenu) */}
+                      {!isUser && (
+                        <FilesChangedSummaryBar
+                          actionsExecuted={msg.actions_executed}
+                          content={msg.content}
+                        />
+                      )}
                     </div>
                   </div>
                 );

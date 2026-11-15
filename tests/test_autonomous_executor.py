@@ -18,6 +18,7 @@ from backend.services.autonomous_executor import (
     extract_files_from_markdown,
     generate_smart_session_title,
     run_automated_workspace_tests,
+    strip_workspace_code_blocks,
 )
 from backend.services.openrouter_client import _compact_history_content
 from backend.services.workspace_scanner import build_workspace_context, estimate_tokens_from_text
@@ -61,10 +62,45 @@ class TestAutonomousExecutorAndTokenOptimization(unittest.TestCase):
             self.assertEqual(actions[0]["type"], "file_written")
             self.assertEqual(actions[0]["status"], "patched")
             self.assertEqual(actions[0]["path"], "js/store.js")
+            self.assertEqual(actions[0]["filename"], "store.js")
+            self.assertGreaterEqual(actions[0]["lines_removed"], 1)
 
             updated_disk = target_file.read_text(encoding="utf-8")
             self.assertNotIn("showPassword", updated_disk)
             self.assertIn("activeRole: 'renter'", updated_disk)
+
+    def test_file_deletion_and_line_diff_stats(self) -> None:
+        """Verifies that file deletion ('// Delete: ...') and line diff counts (+added / -removed) are tracked."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            js_dir = Path(tmpdir) / "js"
+            js_dir.mkdir(parents=True, exist_ok=True)
+            obsolete = js_dir / "legacy.js"
+            obsolete.write_text("const a = 1;\nconst b = 2;\nconst c = 3;\n", encoding="utf-8")
+
+            markdown = (
+                "```javascript\n"
+                "// File: js/new_module.js\n"
+                "export const x = 10;\n"
+                "export const y = 20;\n"
+                "```\n\n"
+                "```javascript\n"
+                "// Delete: js/legacy.js\n"
+                "```\n"
+            )
+            actions = apply_autonomous_files(tmpdir, markdown)
+            self.assertEqual(len(actions), 2)
+            created_act = next(a for a in actions if a["type"] == "file_written")
+            deleted_act = next(a for a in actions if a["type"] == "file_deleted")
+
+            self.assertEqual(created_act["filename"], "new_module.js")
+            self.assertGreater(created_act["lines_added"], 0)
+            self.assertEqual(created_act["lines_removed"], 0)
+
+            self.assertEqual(deleted_act["filename"], "legacy.js")
+            self.assertEqual(deleted_act["status"], "deleted")
+            self.assertEqual(deleted_act["lines_added"], 0)
+            self.assertEqual(deleted_act["lines_removed"], 3)
+            self.assertFalse(obsolete.exists())
 
     def test_skips_before_comparison_code_blocks(self) -> None:
         """Ensures code blocks preceded by '**Before:**' are ignored and only 'After:' blocks apply."""
@@ -187,6 +223,36 @@ class TestAutonomousExecutorAndTokenOptimization(unittest.TestCase):
                 if sess:
                     delete_session(sess["id"])
                 delete_project(proj["id"])
+
+    def test_multi_file_append_and_clean_response_stripping(self) -> None:
+        """Verifies 10-file surgical Append in a single block, header stripping on .cs files, and chat code block removal."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            for i in range(10):
+                p = base / f"Script_{i}.cs"
+                p.write_text(f"namespace GameJam\n{{\n    public class Script_{i} {{}}\n}}\n", encoding="utf-8")
+
+            append_directives = "\n".join(
+                f"// Append: Script_{i}.cs\n// 67" for i in range(10)
+            )
+            llm_response = (
+                "Hola. He editado 10 archivos del proyecto para agregar el comentario `67`.\n\n"
+                f"```csharp\n{append_directives}\n```\n"
+                "```csharp\n// File: BrokenUnclosed.cs\npublic class Broken {"
+            )
+
+            actions = apply_autonomous_files(tmpdir, llm_response)
+            self.assertEqual(len(actions), 10)
+            for i in range(10):
+                content_on_disk = (base / f"Script_{i}.cs").read_text(encoding="utf-8")
+                self.assertIn("// 67", content_on_disk)
+                self.assertNotIn("// Append:", content_on_disk)
+                self.assertNotIn("// File:", content_on_disk)
+
+            cleaned_chat_msg = strip_workspace_code_blocks(llm_response)
+            self.assertIn("He editado 10 archivos", cleaned_chat_msg)
+            self.assertNotIn("```", cleaned_chat_msg)
+            self.assertNotIn("BrokenUnclosed", cleaned_chat_msg)
 
 
 if __name__ == "__main__":

@@ -571,10 +571,13 @@ def build_workspace_context(
         candidate_files = sorted(files, key=_file_sort_key)
 
     # Smart dynamic budget:
-    # - If user Prompt is provided, cap full-file injection to 6,500 tokens to prevent 20k-token blowouts.
-    # - Large untargeted files (> 3,200 chars) are summarized to their structural header (~25 lines)
-    #   unless explicitly targeted by the user prompt.
-    smart_turn_budget = min(effective_budget, 6500) if user_prompt else effective_budget
+    # - If specific files are targeted in user_prompt, allow up to 6,500 tokens for full targeted files.
+    # - If NO specific file is named in user_prompt, cap to 2,800 tokens and compact untargeted files (> 700 chars)
+    #   so general or multi-file tasks never waste thousands of input tokens.
+    if user_prompt:
+        smart_turn_budget = min(effective_budget, 6500 if any_specific_target else 2800)
+    else:
+        smart_turn_budget = effective_budget
 
     file_blocks: List[str] = [header_block]
     injected_paths: List[str] = []
@@ -619,23 +622,23 @@ def build_workspace_context(
                 used_tokens += block_tokens
             continue
 
-        # When NO specific file is named (general project-wide prompt), compact large files (> 4,500 chars)
+        # When NO specific file is named (general project-wide prompt), compact files (> 700 chars)
         should_compact_untargeted = (
             bool(user_prompt)
             and not is_targeted
-            and (len(content) > 4500 or f["extension"] == ".md")
+            and (len(content) > 700 or f["extension"] == ".md")
         )
 
         if should_compact_untargeted:
             lines = content.splitlines()
-            head_preview = "\n".join(lines[:28])
-            tail_preview = "\n".join(lines[-12:]) if len(lines) > 45 else ""
+            head_preview = "\n".join(lines[:14])
+            tail_preview = "\n".join(lines[-6:]) if len(lines) > 22 else ""
             compact_body = (
                 f"{head_preview}\n"
-                f"/* ... [{len(lines) - 40} middle lines omitted for token efficiency] ... */\n"
+                f"/* ... [{len(lines) - 20} middle lines omitted for token efficiency] ... */\n"
                 f"{tail_preview}"
                 if tail_preview
-                else f"{head_preview}\n/* ... [{len(lines) - 28} lines omitted for token efficiency] ... */"
+                else f"{head_preview}\n/* ... [{max(0, len(lines) - 14)} lines omitted for token efficiency] ... */"
             )
             block = (
                 f"<workspace_file path=\"{f['path']}\" language=\"{f['language']}\" summary=\"true\">\n"

@@ -25,7 +25,7 @@ function extractExplicitFilePath(code: string): string | null {
   const lines = code.split("\n").slice(0, 5);
   for (const line of lines) {
     const match = line.match(
-      /(?:\/\/|#|\/\*|<!--|--)\s*(?:File|Path|Target|Archivo|Filename):\s*([^\s*<>]+\.[a-zA-Z0-9]+)/i
+      /(?:\/\/|#|\/\*|<!--|--)\s*(?:File|Path|Target|Archivo|Filename|Append|Append-File|Prepend|Prepend-File|Delete|Delete-File):\s*([^\r\n*<>]+\.[a-zA-Z0-9]+)/i
     );
     if (match && match[1]) {
       return match[1].trim().replace(/^\/+/, "");
@@ -287,17 +287,23 @@ function RichCodeBlock({
       ((actionsExecuted &&
         actionsExecuted.some(
           (a) =>
-            a.type === "file_written" &&
+            (a.type === "file_written" || a.type === "file_deleted") &&
             (a.path === explicitFilePath ||
-              a.path?.endsWith(explicitFilePath))
+              a.path?.endsWith(explicitFilePath) ||
+              Boolean(a.path))
         )) ||
         Boolean(workspacePath))
   );
 
-  // Compact view: collapse ANY file block that was auto-applied to disk (or > 20 lines) by default
-  // so the chat shows clean File Action Cards instead of dumping raw code snippets!
+  // When a code block targets a workspace file and is applied directly to disk,
+  // hide the code snippet completely from the chat so the user only sees the AI's
+  // clean summary text and the collapsible `N file(s) changed +X -Y` bar below.
+  if (wasAutoApplied) {
+    return null;
+  }
+
   const shouldDefaultCollapse = Boolean(
-    wasAutoApplied || (explicitFilePath && lines.length > 20)
+    explicitFilePath && lines.length > 20
   );
   const [isExpanded, setIsExpanded] = useState(!shouldDefaultCollapse);
   const visibleLines = isExpanded ? lines : [];
@@ -553,6 +559,13 @@ export default function MarkdownRenderer({
 }: MarkdownRendererProps) {
   if (!content) return null;
 
+  // Strip any unclosed trailing code fence (e.g., if a model stopped mid-block)
+  // so raw workspace code snippets never leak into the visible chat prose.
+  const sanitizedContent = content.replace(
+    /```[a-zA-Z0-9_+#-]*\n(?:(?!(?:```))[\s\S])*$/,
+    ""
+  );
+
   const segments: Array<
     | { type: "code"; language: string; code: string }
     | { type: "prose"; text: string }
@@ -562,11 +575,11 @@ export default function MarkdownRenderer({
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = codeBlockRegex.exec(content)) !== null) {
+  while ((match = codeBlockRegex.exec(sanitizedContent)) !== null) {
     if (match.index > lastIndex) {
       segments.push({
         type: "prose",
-        text: content.slice(lastIndex, match.index),
+        text: sanitizedContent.slice(lastIndex, match.index),
       });
     }
     segments.push({
@@ -577,10 +590,10 @@ export default function MarkdownRenderer({
     lastIndex = match.index + match[0].length;
   }
 
-  if (lastIndex < content.length) {
+  if (lastIndex < sanitizedContent.length) {
     segments.push({
       type: "prose",
-      text: content.slice(lastIndex),
+      text: sanitizedContent.slice(lastIndex),
     });
   }
 
