@@ -217,7 +217,7 @@ async def run_dev_squad_workflow(
         "- Write full, working implementations (Unity C#, ShaderLab, Python, TypeScript, etc.) with zero placeholders like `// TODO`.\n"
         "- Begin EVERY code block with a file path comment on the very first line, e.g.:\n"
         "  `// File: Assets/Scripts/Systems/InventoryManager.cs` or `# File: scripts/processor.py`\n"
-        "  so the user can click 'Apply to Workspace' to save the file directly into their project.\n"
+        "  The autonomous engine uses this header to write the file directly to the local disk.\n"
         "- In Unity C#, cache component references in `Awake()` and avoid heap allocations inside `Update()`.\n"
         "- Match existing project namespaces (e.g. `GameJam.Gameplay`, `GameJam.Core`, `GameJam.UI` for GodBoard).\n"
         "- AUTONOMY & ZERO-MANUAL-CHORES POLICY:\n"
