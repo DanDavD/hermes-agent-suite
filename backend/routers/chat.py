@@ -21,6 +21,7 @@ from backend.services.autonomous_executor import (
     generate_smart_session_title,
     prompt_needs_workspace_injection,
     run_automated_workspace_tests,
+    strip_workspace_code_blocks,
 )
 from backend.services.openrouter_client import format_attachments_block
 from backend.services.workflows import dispatch_workflow
@@ -259,6 +260,10 @@ async def execute_chat(payload: ChatRequest) -> Any:
         prompt=payload.prompt,
         assistant_content=assistant_content,
     )
+    if any(a.get("type") in ("file_written", "file_deleted") for a in actions_executed):
+        cleaned_text = strip_workspace_code_blocks(assistant_content)
+        if cleaned_text:
+            assistant_content = cleaned_text
 
     assistant_msg = add_message(
         session_id=session_id,
@@ -331,6 +336,10 @@ async def stream_chat(payload: ChatRequest) -> StreamingResponse:
                 prompt=payload.prompt,
                 assistant_content=assistant_content,
             )
+            if any(a.get("type") in ("file_written", "file_deleted") for a in actions_executed):
+                cleaned_text = strip_workspace_code_blocks(assistant_content)
+                if cleaned_text:
+                    assistant_content = cleaned_text
 
             assistant_msg = add_message(
                 session_id=session_id,

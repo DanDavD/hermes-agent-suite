@@ -72,7 +72,7 @@ pkill -f "uvicorn backend.main:app" 2>/dev/null || true
 sleep 0.5
 
 echo "[1/2] Starting FastAPI Backend on http://127.0.0.1:8765 ..."
-uvicorn backend.main:app --host 127.0.0.1 --port 8765 &
+uvicorn backend.main:app --host 127.0.0.1 --port 8765 --reload --reload-dir backend &
 BACKEND_PID=$!
 
 # Wait briefly for FastAPI health check
