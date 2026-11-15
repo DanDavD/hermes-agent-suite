@@ -28,6 +28,9 @@ cleanup() {
         echo "   -> Stopping FastAPI backend (PID ${BACKEND_PID})..."
         kill -TERM "${BACKEND_PID}" 2>/dev/null || true
     fi
+    lsof -ti :8765 | xargs kill -9 2>/dev/null || true
+    lsof -ti :3000 | xargs kill -9 2>/dev/null || true
+    pkill -f "uvicorn backend.main:app" 2>/dev/null || true
     wait 2>/dev/null || true
     echo "[OK] All Hermes Studio services stopped cleanly."
     exit 0
@@ -62,9 +65,11 @@ fi
 # shellcheck disable=SC1091
 source "$ROOT_DIR/.venv/bin/activate"
 
-# Free up any previous Hermes Studio uvicorn instance on port 8765
+# Free up any previous Hermes Studio instances on ports 8765 and 3000
+lsof -ti :8765 | xargs kill -9 2>/dev/null || true
+lsof -ti :3000 | xargs kill -9 2>/dev/null || true
 pkill -f "uvicorn backend.main:app" 2>/dev/null || true
-sleep 0.3
+sleep 0.5
 
 echo "[1/2] Starting FastAPI Backend on http://127.0.0.1:8765 ..."
 uvicorn backend.main:app --host 127.0.0.1 --port 8765 &
