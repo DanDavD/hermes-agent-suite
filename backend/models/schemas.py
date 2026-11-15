@@ -45,6 +45,7 @@ class MessageResponse(BaseModel):
     attachments: List[Dict[str, Any]] = Field(default_factory=list)
     attachments_json: str = "[]"
     agent_steps: List[AgentStep] = Field(default_factory=list)
+    actions_executed: List[Dict[str, Any]] = Field(default_factory=list)
     tokens_used: int = 0
     created_at: str
 

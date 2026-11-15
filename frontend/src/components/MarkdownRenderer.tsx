@@ -2,10 +2,12 @@
 
 import React, { useState } from "react";
 import { applyCodeToWorkspace } from "@/lib/api";
+import { AutonomousActionItem } from "@/lib/types";
 
 interface MarkdownRendererProps {
   content: string;
   workspacePath?: string;
+  actionsExecuted?: AutonomousActionItem[];
   onOpenWorkspaceModal?: () => void;
   onFileApplied?: (relativePath: string, fullPath: string) => void;
 }
@@ -14,8 +16,22 @@ interface CodeBlockProps {
   language: string;
   code: string;
   workspacePath?: string;
+  actionsExecuted?: AutonomousActionItem[];
   onOpenWorkspaceModal?: () => void;
   onFileApplied?: (relativePath: string, fullPath: string) => void;
+}
+
+function extractExplicitFilePath(code: string): string | null {
+  const lines = code.split("\n").slice(0, 5);
+  for (const line of lines) {
+    const match = line.match(
+      /(?:\/\/|#|\/\*|<!--|--)\s*(?:File|Path|Target|Archivo|Filename):\s*([^\s*<>]+\.[a-zA-Z0-9]+)/i
+    );
+    if (match && match[1]) {
+      return match[1].trim().replace(/^\/+/, "");
+    }
+  }
+  return null;
 }
 
 function inferDefaultRelativePath(language: string, code: string): string {
@@ -244,13 +260,15 @@ function RichCodeBlock({
   language,
   code,
   workspacePath,
+  actionsExecuted,
   onOpenWorkspaceModal,
   onFileApplied,
 }: CodeBlockProps) {
+  const explicitFilePath = extractExplicitFilePath(code);
   const [copied, setCopied] = useState(false);
   const [showApplyBar, setShowApplyBar] = useState(false);
   const [relativePath, setRelativePath] = useState(() =>
-    inferDefaultRelativePath(language, code)
+    explicitFilePath || inferDefaultRelativePath(language, code)
   );
   const [applying, setApplying] = useState(false);
   const [applyStatus, setApplyStatus] = useState<{
@@ -260,6 +278,29 @@ function RichCodeBlock({
 
   const cleanCode = code.replace(/\n$/, "");
   const lines = cleanCode.split("\n");
+  const isSearchReplacePatch =
+    cleanCode.includes("<<<<<<< SEARCH") &&
+    cleanCode.includes(">>>>>>> REPLACE");
+
+  const wasAutoApplied = Boolean(
+    explicitFilePath &&
+      ((actionsExecuted &&
+        actionsExecuted.some(
+          (a) =>
+            a.type === "file_written" &&
+            (a.path === explicitFilePath ||
+              a.path?.endsWith(explicitFilePath))
+        )) ||
+        Boolean(workspacePath))
+  );
+
+  // Compact view: collapse ANY file block that was auto-applied to disk (or > 20 lines) by default
+  // so the chat shows clean File Action Cards instead of dumping raw code snippets!
+  const shouldDefaultCollapse = Boolean(
+    wasAutoApplied || (explicitFilePath && lines.length > 20)
+  );
+  const [isExpanded, setIsExpanded] = useState(!shouldDefaultCollapse);
+  const visibleLines = isExpanded ? lines : [];
 
   const handleCopy = async () => {
     try {
@@ -311,26 +352,50 @@ function RichCodeBlock({
     <div className="my-3.5 rounded-xl border border-zinc-800/90 bg-[#111111] overflow-hidden">
       {/* Top Code Header Bar */}
       <div className="flex items-center justify-between px-3.5 py-2 bg-[#1A1A1A] border-b border-zinc-800/80">
-        <div className="flex items-center gap-2.5">
-          <span className="text-[11px] font-mono font-medium text-zinc-300">
+        <div className="flex items-center gap-2.5 min-w-0">
+          {explicitFilePath ? (
+            <span className="text-[11.5px] font-mono font-semibold text-zinc-100 truncate">
+              {explicitFilePath}
+            </span>
+          ) : null}
+          <span className="text-[11px] font-mono font-medium text-zinc-400">
             {formatLanguageBadge(language)}
           </span>
           <span className="text-[11px] font-mono text-zinc-500">
             {lines.length} {lines.length === 1 ? "line" : "lines"}
+            {isSearchReplacePatch ? " (diff patch)" : ""}
           </span>
+          {wasAutoApplied && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-950/60 border border-emerald-800/50 text-emerald-300">
+              <span>✓</span>
+              <span>Applied to Disk</span>
+            </span>
+          )}
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setApplyStatus(null);
-              setShowApplyBar((prev) => !prev);
-            }}
-            className="px-2.5 py-1 rounded-md text-xs font-medium bg-[#262626] hover:bg-[#303030] text-zinc-200 transition-colors"
-          >
-            Apply to Workspace
-          </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {(wasAutoApplied || lines.length > 20) && (
+            <button
+              type="button"
+              onClick={() => setIsExpanded((prev) => !prev)}
+              className="px-2.5 py-1 rounded-md text-xs font-medium bg-[#222222] hover:bg-[#2C2C2C] text-zinc-200 transition-colors"
+            >
+              {isExpanded ? "Hide Code" : `View Code (${lines.length} lines)`}
+            </button>
+          )}
+
+          {!wasAutoApplied && (
+            <button
+              type="button"
+              onClick={() => {
+                setApplyStatus(null);
+                setShowApplyBar((prev) => !prev);
+              }}
+              className="px-2.5 py-1 rounded-md text-xs font-medium bg-[#262626] hover:bg-[#303030] text-zinc-200 transition-colors"
+            >
+              Apply to Workspace
+            </button>
+          )}
 
           <button
             type="button"
@@ -407,23 +472,25 @@ function RichCodeBlock({
         </div>
       )}
 
-      {/* Code Lines with Line Numbers */}
-      <div className="overflow-x-auto py-3 px-2 font-mono text-[12.5px] leading-relaxed">
-        <table className="w-full border-collapse">
-          <tbody>
-            {lines.map((line, idx) => (
-              <tr key={idx} className="hover:bg-zinc-900/50 transition-colors">
-                <td className="select-none pr-3 pl-2 text-right text-[11px] text-zinc-600 w-9 align-top">
-                  {idx + 1}
-                </td>
-                <td className="pr-4 text-zinc-200 whitespace-pre">
-                  {highlightCodeLine(line)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {/* Code Lines with Line Numbers (only rendered when expanded) */}
+      {isExpanded && (
+        <div className="overflow-x-auto py-3 px-2 font-mono text-[12.5px] leading-relaxed">
+          <table className="w-full border-collapse">
+            <tbody>
+              {visibleLines.map((line, idx) => (
+                <tr key={idx} className="hover:bg-zinc-900/50 transition-colors">
+                  <td className="select-none pr-3 pl-2 text-right text-[11px] text-zinc-600 w-9 align-top">
+                    {idx + 1}
+                  </td>
+                  <td className="pr-4 text-zinc-200 whitespace-pre">
+                    {highlightCodeLine(line)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -480,6 +547,7 @@ function renderInlineFormatting(text: string): React.ReactNode {
 export default function MarkdownRenderer({
   content,
   workspacePath,
+  actionsExecuted,
   onOpenWorkspaceModal,
   onFileApplied,
 }: MarkdownRendererProps) {
@@ -730,6 +798,7 @@ export default function MarkdownRenderer({
             language={seg.language}
             code={seg.code}
             workspacePath={workspacePath}
+            actionsExecuted={actionsExecuted}
             onOpenWorkspaceModal={onOpenWorkspaceModal}
             onFileApplied={onFileApplied}
           />

@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import re
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
@@ -109,6 +110,39 @@ FALLBACK_MODELS = [
 ]
 
 
+_HISTORY_CODE_BLOCK_RE = re.compile(r"```([a-zA-Z0-9_+#-]*)\n([\s\S]*?)```")
+_HISTORY_FILE_HEADER_RE = re.compile(
+    r"^(?://|#|/\*|<!--|--)\s*(?:File|Path|Target|Archivo|Filename):\s*([^\s*]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _compact_history_content(role: str, content: str) -> str:
+    """
+    Compacts large code blocks in prior conversation turns so follow-up messages
+    do not re-send thousands of tokens of code that was already written to disk.
+    """
+    if not content or role != "assistant":
+        return content
+
+    def _replace_block(match: re.Match) -> str:
+        lang = match.group(1) or "code"
+        body = match.group(2) or ""
+        lines = body.splitlines()
+        if len(lines) <= 18 and len(body) <= 700:
+            return match.group(0)
+        f_match = _HISTORY_FILE_HEADER_RE.search("\n".join(lines[:4]))
+        if f_match:
+            target_file = f_match.group(1).strip()
+            return f"`[Autonomous Disk Write: {target_file} ({len(lines)} lines applied to workspace)]`"
+        return f"`[Code block ({lang}, {len(lines)} lines) omitted from history for token efficiency]`"
+
+    compacted = _HISTORY_CODE_BLOCK_RE.sub(_replace_block, content)
+    if len(compacted) > 2800:
+        compacted = compacted[:2800] + "\n...[prior response summarized for token conservation]..."
+    return compacted
+
+
 async def acall_llm(
     model: str,
     system_prompt: str,
@@ -140,14 +174,15 @@ async def acall_llm(
 
     messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
     if conversation_history:
-        # Keep only the most recent turns and cap total history characters
+        # Keep only recent turns, compact old code dumps, and cap total history characters to ~2,200 tokens
         history_chars = 0
         trimmed_history: List[Dict[str, str]] = []
-        for msg in reversed(conversation_history[-8:]):
+        for msg in reversed(conversation_history[-6:]):
             role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role in ("user", "assistant") and content:
-                if history_chars + len(content) > 24000:
+            raw_content = msg.get("content", "")
+            if role in ("user", "assistant") and raw_content:
+                content = _compact_history_content(role, raw_content)
+                if history_chars + len(content) > 9000:
                     break
                 trimmed_history.append({"role": role, "content": content})
                 history_chars += len(content)
@@ -229,16 +264,31 @@ async def run_raw_model_workflow(
     badge = get_mode_badge(resolved_mode)
 
     system_prompt = (
-        "You are an elite Principal Software & Unity Game Engineer inside Hermes Studio v2.\n"
-        "Provide direct, production-ready, deeply technical responses and complete code implementations.\n"
-        "When generating source files for the user's workspace, include a comment on the first line of the code block "
-        "indicating the relative file path (e.g., `// File: Assets/Scripts/PlayerController.cs` or `# File: scripts/tool.py`) "
-        "so the user can one-click Apply it to their workspace.\n\n"
+        "You are an elite Autonomous Principal Software & Game Engineer inside Hermes Studio v2.\n"
+        "You have direct write access to the user's local project workspace on disk.\n\n"
+        "### MANDATORY AUTONOMOUS DISK EDITING & TOKEN EFFICIENCY POLICY:\n"
+        "1. ALWAYS begin the very first line of EVERY file/patch code block with its relative file path:\n"
+        "   - JS/TS/C#/CSS: `// File: js/app.js` or `// File: Assets/Scripts/PlayerController.cs`\n"
+        "   - Python/Shell/YAML: `# File: backend/main.py`\n"
+        "   - HTML: `<!-- File: index.html -->`\n"
+        "   The Hermes Studio autonomous engine intercepts these blocks and writes or patches the files DIRECTLY on the user's local disk (immediately visible in GitHub Desktop).\n"
+        "2. PREFER SURGICAL `SEARCH/REPLACE` BLOCKS FOR EXISTING FILES (> 60 lines) TO SAVE TOKENS:\n"
+        "   When modifying an existing file from the workspace, DO NOT rewrite hundreds of unchanged lines. Output only the targeted `SEARCH/REPLACE` blocks:\n"
+        "   ```javascript\n"
+        "   // File: js/store.js\n"
+        "   <<<<<<< SEARCH\n"
+        "   exact existing lines from the file\n"
+        "   =======\n"
+        "   updated replacement lines\n"
+        "   >>>>>>> REPLACE\n"
+        "   ```\n"
+        "   When creating a brand-new file or editing a small file (<= 60 lines), output the complete file with `// File: <path>` on line 1.\n"
+        "3. NEVER OUTPUT 'BEFORE' CODE BLOCKS OR DUPLICATE SNIPPETS:\n"
+        "   - Do NOT print `Before:` code blocks or repeat old unchanged code in your explanation.\n"
+        "   - Keep your text explanation concise: state what files you modified on disk and why in 3-6 bullet points.\n\n"
         "### STRICT AUTONOMY & ZERO-MANUAL-CHORES POLICY:\n"
-        "- NEVER tell the user to manually create GameObjects in the Unity Editor, attach components, or drag fields in the Inspector. "
-        "Instead, write a Unity Editor setup script (e.g. `// File: Assets/_Project/Editor/MusicSystemSetup.cs`) with `[MenuItem]` or `[InitializeOnLoadMethod]` that automates 100% of scene setup and reference linking programmatically.\n"
-        "- NEVER say 'as an AI I cannot generate binary files, go to Suno.ai'. If audio, music, or SFX is requested, provide a procedural audio synthesizer (`OnAudioFilterRead` or `AudioClip.Create`) that generates rich orchestral, war drum, or ambient audio in real time, or provide an automated Python script using standard library 'wave' to write the real `.wav` file directly into Assets/.\n"
-        "- Always respect and align with the existing project namespaces and architecture (e.g. `GameJam.Gameplay`, `GameJam.Core`, `GameJam.UI` for GodBoard) without inventing arbitrary new namespaces."
+        "- NEVER tell the user to manually copy-paste code or manually create GameObjects in Unity.\n"
+        "- Respect existing project architecture, variable names, and namespaces."
     )
     if workspace_context:
         system_prompt += (
