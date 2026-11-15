@@ -7,6 +7,8 @@ interface TopBarProps {
   onExpandSidebar: () => void;
   sessionTitle: string;
   projectName?: string | null;
+  onTogglePromptEnhancer?: () => void;
+  isPromptEnhancerOpen?: boolean;
 }
 
 export default function TopBar({
@@ -14,6 +16,8 @@ export default function TopBar({
   onExpandSidebar,
   sessionTitle,
   projectName,
+  onTogglePromptEnhancer,
+  isPromptEnhancerOpen,
 }: TopBarProps) {
   return (
     <header
@@ -53,6 +57,9 @@ export default function TopBar({
           </h1>
         </div>
       </div>
+
+      {/* Top Right Spacer */}
+      <div className="flex items-center gap-2" data-no-drag />
     </header>
   );
 }

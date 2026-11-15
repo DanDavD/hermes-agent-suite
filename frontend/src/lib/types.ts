@@ -148,3 +148,15 @@ export interface TelemetryData {
   max_tokens: number;
   status_message?: string;
 }
+
+export interface PromptEnhancerMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  summary?: string;
+  enhanced_prompt?: string;
+  explanation?: string;
+  tips?: string[];
+  model_used?: string;
+  created_at: string;
+}
