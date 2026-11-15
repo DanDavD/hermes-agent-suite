@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend import __version__
 from backend.config import AVAILABLE_MODES, runtime_settings
 from backend.database import init_db
-from backend.routers import projects, sessions, telemetry, workspace
+from backend.routers import chat, projects, prompt_enhancer, sessions, telemetry, workspace
 
 # Ensure SQLite tables and initial welcome session exist immediately on import
 init_db()
@@ -60,6 +60,7 @@ app.include_router(sessions.router)
 app.include_router(telemetry.router)
 app.include_router(workspace.router)
 app.include_router(chat.router)
+app.include_router(prompt_enhancer.router)
 
 
 @app.get("/api/health", tags=["health"])

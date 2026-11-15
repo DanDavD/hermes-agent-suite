@@ -14,6 +14,8 @@ interface BottomComposerProps {
   onChangePrompt: (val: string) => void;
   onSend: () => void;
   isSending: boolean;
+  onEnhancePrompt?: () => Promise<void>;
+  isEnhancingPrompt?: boolean;
   attachments: FileAttachment[];
   onAddAttachment: (att: FileAttachment) => void;
   onRemoveAttachment: (id: string) => void;
@@ -63,6 +65,8 @@ export default function BottomComposer({
   onChangePrompt,
   onSend,
   isSending,
+  onEnhancePrompt,
+  isEnhancingPrompt = false,
   attachments,
   onAddAttachment,
   onRemoveAttachment,
@@ -89,6 +93,31 @@ export default function BottomComposer({
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [pickingFinder, setPickingFinder] = useState(false);
+  const [enhanceProgress, setEnhanceProgress] = useState(0);
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    if (isEnhancingPrompt) {
+      setEnhanceProgress(12);
+      interval = setInterval(() => {
+        setEnhanceProgress((prev) => {
+          if (prev >= 92) return 92;
+          const remaining = 92 - prev;
+          const step = Math.max(1, Math.round(remaining * 0.16));
+          return prev + step;
+        });
+      }, 130);
+    } else {
+      if (enhanceProgress > 0) {
+        setEnhanceProgress(100);
+        const timer = setTimeout(() => setEnhanceProgress(0), 650);
+        return () => clearTimeout(timer);
+      }
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isEnhancingPrompt]);
 
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -309,12 +338,119 @@ export default function BottomComposer({
               className="flex-1 bg-transparent text-zinc-100 placeholder-zinc-500 text-sm leading-5 py-1 focus:outline-none resize-none min-h-[28px] max-h-[180px]"
             />
 
-            {/* Circular Send Button with Upward Arrow INSIDE prompt box, Vertically Centered */}
-            <div className="shrink-0 flex items-center">
+            {/* Circular Action Buttons INSIDE prompt box: Upgrade Prompt ($0) & Send */}
+            <div className="shrink-0 flex items-center gap-1.5">
+              {/* Upgrade / Enhance Prompt Button ($0 Free) with Subtle Tooltip */}
+              {onEnhancePrompt && (
+                <div className="relative group flex items-center justify-center">
+                  <button
+                    type="button"
+                    onClick={onEnhancePrompt}
+                    disabled={isSending || isEnhancingPrompt || !prompt.trim()}
+                    className={`relative w-7 h-7 rounded-full flex items-center justify-center transition-all overflow-hidden ${
+                      isEnhancingPrompt
+                        ? "bg-[#14231b] text-emerald-300 border border-emerald-500/60 shadow-[0_0_12px_rgba(16,185,129,0.35)] cursor-wait"
+                        : enhanceProgress === 100
+                        ? "bg-emerald-500 text-black border border-emerald-400 scale-105"
+                        : prompt.trim()
+                        ? "bg-[#222222] hover:bg-[#2A2A2A] text-emerald-400 hover:text-emerald-300 border border-emerald-500/30 hover:border-emerald-500/60 hover:scale-105 shadow-sm"
+                        : "bg-[#202020]/50 text-zinc-600 border border-zinc-800/80 cursor-not-allowed"
+                    }`}
+                  >
+                    {/* Filling Progress Bar Background (Shape of the button) */}
+                    {isEnhancingPrompt && (
+                      <div
+                        className="absolute inset-0 bg-gradient-to-r from-emerald-500/30 via-emerald-400/40 to-emerald-300/50 transition-all duration-150"
+                        style={{ width: `${enhanceProgress}%` }}
+                      />
+                    )}
+
+                    {/* Circular Border Progress Ring */}
+                    {isEnhancingPrompt && (
+                      <svg
+                        className="absolute inset-0 w-full h-full -rotate-90 pointer-events-none"
+                        viewBox="0 0 28 28"
+                      >
+                        <circle
+                          cx="14"
+                          cy="14"
+                          r="12"
+                          stroke="rgba(16, 185, 129, 0.2)"
+                          strokeWidth="2"
+                          fill="none"
+                        />
+                        <circle
+                          cx="14"
+                          cy="14"
+                          r="12"
+                          stroke="#10b981"
+                          strokeWidth="2"
+                          fill="none"
+                          strokeDasharray="75.4"
+                          strokeDashoffset={75.4 - (75.4 * enhanceProgress) / 100}
+                          strokeLinecap="round"
+                          className="transition-all duration-150"
+                        />
+                      </svg>
+                    )}
+
+                    {/* Upgrade Icon: AI 4-Point Magic Star / Checkmark */}
+                    <span className="relative z-10 flex items-center justify-center">
+                      {enhanceProgress === 100 ? (
+                        <svg
+                          className="w-3.5 h-3.5 text-black animate-in zoom-in-50 duration-150"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="3"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      ) : isEnhancingPrompt ? (
+                        <svg
+                          className="w-3.5 h-3.5 text-emerald-300 animate-pulse"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z" />
+                        </svg>
+                      ) : (
+                        /* Stylized Upgrade AI Sparkle Icon */
+                        <svg
+                          className="w-3.5 h-3.5"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z" />
+                        </svg>
+                      )}
+                    </span>
+                  </button>
+
+                  {/* Subtle Tooltip below the button without ruining UI/UX */}
+                  {!isEnhancingPrompt && (
+                    <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-md bg-[#161616] border border-zinc-800 text-[10px] font-medium text-zinc-300 shadow-xl opacity-0 group-hover:opacity-100 transition-all duration-150 pointer-events-none select-none z-30 whitespace-nowrap">
+                      Prompt Enhancer
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Circular Send Button with Upward Arrow INSIDE prompt box, Vertically Centered */}
               <button
                 type="button"
                 onClick={onSend}
-                disabled={isSending || (!prompt.trim() && attachments.length === 0)}
+                disabled={isSending || isEnhancingPrompt || (!prompt.trim() && attachments.length === 0)}
                 className={`w-7 h-7 rounded-full flex items-center justify-center transition-all ${
                   isSending
                     ? "bg-zinc-700 text-zinc-300 animate-pulse"
