@@ -64,6 +64,7 @@ class HermesApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDe
     var webView: HermesWebView!
     var loadingOverlay: NSVisualEffectView?
     var statusLabel: NSTextField?
+    var orchestratorProcess: Process?
     let targetURL = URL(string: "http://localhost:3000")!
     let healthURL = URL(string: "http://127.0.0.1:8765/api/health")!
 
@@ -71,7 +72,13 @@ class HermesApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDe
         setupMainMenu()
         setupWindow()
         setupWebView()
-        loadStudioWithRetry(retriesRemaining: 15)
+        ensureServicesAndLoad()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let process = orchestratorProcess, process.isRunning {
+            process.terminate()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -168,9 +175,92 @@ class HermesApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDe
         window.contentView?.addSubview(webView)
     }
 
-    // MARK: - Healthcheck & Auto-Retry Loop
+    // MARK: - Autonomous Background Services Management & Healthcheck Loop
+    private func ensureServicesAndLoad() {
+        showLoadingOverlay(message: "Connecting to Hermes Studio...")
+
+        // Probe if already online
+        checkServicesOnline { [weak self] isOnline in
+            guard let self = self else { return }
+            if isOnline {
+                self.hideLoadingOverlay()
+                self.webView.load(URLRequest(url: self.targetURL))
+            } else {
+                // Not online -> Automatically launch background services
+                self.showLoadingOverlay(message: "Starting Hermes Studio background services (FastAPI + Next.js)...")
+                self.launchBackgroundServices()
+                self.loadStudioWithRetry(retriesRemaining: 30)
+            }
+        }
+    }
+
+    private func checkServicesOnline(completion: @escaping (Bool) -> Void) {
+        var request = URLRequest(url: targetURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 1.5)
+        request.httpMethod = "GET"
+        let task = URLSession.shared.dataTask(with: request) { _, response, _ in
+            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                DispatchQueue.main.async { completion(true) }
+            } else {
+                DispatchQueue.main.async { completion(false) }
+            }
+        }
+        task.resume()
+    }
+
+    private func findStudioRoot() -> String? {
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser.path
+        let candidates = [
+            (home as NSString).appendingPathComponent("Documents/GitHub/hermes-agent-suite"),
+            (home as NSString).appendingPathComponent("hermes-agent-suite"),
+            Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path
+        ]
+        for path in candidates {
+            let scriptPath = (path as NSString).appendingPathComponent("start-studio.sh")
+            if fileManager.fileExists(atPath: scriptPath) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private func launchBackgroundServices() {
+        guard let rootPath = findStudioRoot() else {
+            showLoadingOverlay(message: "Could not locate hermes-agent-suite directory.\\nPlease run ./start-studio.sh manually.")
+            return
+        }
+
+        let scriptPath = (rootPath as NSString).appendingPathComponent("start-studio.sh")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [scriptPath]
+        process.currentDirectoryURL = URL(fileURLWithPath: rootPath)
+
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + (env["PATH"] ?? "")
+        process.environment = env
+
+        // Redirect background output to /tmp/hermes-studio.log so process doesn't block on buffer
+        let logPath = "/tmp/hermes-studio.log"
+        if !FileManager.default.fileExists(atPath: logPath) {
+            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
+        }
+        if let fileHandle = FileHandle(forWritingAtPath: logPath) {
+            fileHandle.seekToEndOfFile()
+            process.standardOutput = fileHandle
+            process.standardError = fileHandle
+        }
+
+        do {
+            try process.run()
+            self.orchestratorProcess = process
+        } catch {
+            showLoadingOverlay(message: "Failed to start background services: \(error.localizedDescription)")
+        }
+    }
+
     private func loadStudioWithRetry(retriesRemaining: Int) {
-        let request = URLRequest(url: targetURL, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 5.0)
+        let request = URLRequest(url: targetURL, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 3.0)
         let task = URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
             guard let self = self else { return }
             DispatchQueue.main.async {
@@ -178,13 +268,13 @@ class HermesApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDe
                     self.hideLoadingOverlay()
                     self.webView.load(request)
                 } else if retriesRemaining > 0 {
-                    self.showLoadingOverlay(message: "Connecting to Hermes Studio (\(retriesRemaining) retries remaining)...")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    self.showLoadingOverlay(message: "Starting Hermes Studio services (\(retriesRemaining))...")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                         self.loadStudioWithRetry(retriesRemaining: retriesRemaining - 1)
                     }
                 } else {
                     self.showLoadingOverlay(
-                        message: "Hermes Studio services offline.\\nRun ./start-studio.sh or launch backend on port 8765 and frontend on port 3000."
+                        message: "Hermes Studio services timed out.\\nCheck /tmp/hermes-studio.log or run ./start-studio.sh"
                     )
                 }
             }
@@ -279,7 +369,11 @@ class HermesApplicationDelegate: NSObject, NSApplicationDelegate, WKNavigationDe
     }
 
     @objc private func reloadWebView() {
-        webView.reload()
+        if loadingOverlay?.superview != nil {
+            ensureServicesAndLoad()
+        } else {
+            webView.reload()
+        }
     }
 }
 
