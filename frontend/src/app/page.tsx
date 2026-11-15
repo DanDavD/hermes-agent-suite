@@ -8,6 +8,7 @@ import MarkdownRenderer from "@/components/MarkdownRenderer";
 import AgentStepsAccordion from "@/components/AgentStepsAccordion";
 import WorkspaceModal from "@/components/WorkspaceModal";
 import SettingsTelemetryModal from "@/components/SettingsTelemetryModal";
+import PromptEnhancerDrawer from "@/components/PromptEnhancerDrawer";
 import {
   ChatMessage,
   ChatSession,
@@ -33,6 +34,7 @@ import {
   updateProjectById,
   updateRuntimeSettings,
   updateSessionById,
+  enhancePromptApi,
 } from "@/lib/api";
 
 const CLEVER_DEV_GREETINGS: string[] = [
@@ -152,6 +154,9 @@ export default function HermesWorkstationPage() {
   // Modals state
   const [workspaceModalOpen, setWorkspaceModalOpen] = useState(false);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [isPromptEnhancerOpen, setIsPromptEnhancerOpen] = useState(false);
+  const [isEnhancingComposerPrompt, setIsEnhancingComposerPrompt] =
+    useState(false);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -172,7 +177,7 @@ export default function HermesWorkstationPage() {
     setGreetingIndex(Math.floor(Math.random() * CLEVER_DEV_GREETINGS.length));
   }, []);
 
-  // Antigravity-style dynamic Thinking status progression
+  // Dynamic Thinking status progression
   useEffect(() => {
     if (!isSending) return;
     const stages = [
@@ -570,6 +575,29 @@ export default function HermesWorkstationPage() {
       .catch(() => {});
   };
 
+  const handleEnhanceComposerPrompt = async () => {
+    if (!prompt.trim() || isEnhancingComposerPrompt || isSending) return;
+    setIsEnhancingComposerPrompt(true);
+    try {
+      const res = await enhancePromptApi({
+        prompt: prompt.trim(),
+        workspace_name: workspace?.project_name,
+        workspace_files: workspace?.files?.map((f) => f.relative_path),
+        active_mode: activeMode,
+      });
+      if (res && res.enhanced_prompt) {
+        setPrompt(res.enhanced_prompt);
+        setToastBanner("✨ Prompt upgraded to structured English architecture ($0)!");
+        setTimeout(() => setToastBanner(null), 3500);
+      }
+    } catch (err: any) {
+      setToastBanner(`⚠️ Failed to upgrade prompt: ${err.message || "Network error"}`);
+      setTimeout(() => setToastBanner(null), 4000);
+    } finally {
+      setIsEnhancingComposerPrompt(false);
+    }
+  };
+
   const handleSend = async () => {
     const trimmed = prompt.trim();
     if (!trimmed && attachments.length === 0) return;
@@ -594,12 +622,18 @@ export default function HermesWorkstationPage() {
     setIsSending(true);
 
     try {
+      const effectiveWorkspacePath =
+        workspace?.path ||
+        activeProject?.workspace_path ||
+        currentSessionObj?.workspace_path ||
+        "";
+
       let targetSessionId = activeSessionId;
       if (!targetSessionId) {
         const created = await createNewSession({
           title: currentPrompt.slice(0, 48),
           mode: activeMode,
-          workspace_path: workspace?.path || "",
+          workspace_path: effectiveWorkspacePath,
           project_id: activeProjectId,
         });
         targetSessionId = created.id;
@@ -609,10 +643,11 @@ export default function HermesWorkstationPage() {
 
       const result = await sendChatMessage({
         session_id: targetSessionId,
+        project_id: activeProjectId,
         prompt: currentPrompt,
         mode: activeMode,
-        workspace_path: workspace?.path,
-        include_workspace: Boolean(workspace && includeWorkspace),
+        workspace_path: effectiveWorkspacePath,
+        include_workspace: Boolean(effectiveWorkspacePath && includeWorkspace),
         selected_files:
           workspace && includeWorkspace ? selectedWorkspaceFiles : undefined,
         attachments: currentAttachments,
@@ -735,6 +770,8 @@ export default function HermesWorkstationPage() {
           onExpandSidebar={() => setSidebarCollapsed(false)}
           sessionTitle={currentSessionObj?.title || "New Chat"}
           projectName={activeProject?.name || null}
+          onTogglePromptEnhancer={() => setIsPromptEnhancerOpen((prev) => !prev)}
+          isPromptEnhancerOpen={isPromptEnhancerOpen}
         />
 
         {/* Floating Neutral Toast / Error Banners */}
@@ -920,7 +957,13 @@ export default function HermesWorkstationPage() {
                       {/* Message Markdown & Code Blocks */}
                       <MarkdownRenderer
                         content={msg.content}
-                        workspacePath={workspace?.path}
+                        workspacePath={
+                          workspace?.path ||
+                          activeProject?.workspace_path ||
+                          currentSessionObj?.workspace_path ||
+                          undefined
+                        }
+                        actionsExecuted={msg.actions_executed}
                         onOpenWorkspaceModal={() => setWorkspaceModalOpen(true)}
                         onFileApplied={handleFileApplied}
                       />
@@ -929,7 +972,7 @@ export default function HermesWorkstationPage() {
                 );
               })}
 
-              {/* Antigravity-Style Live Thinking Card while Sending */}
+              {/* Live Thinking Card while Sending */}
               {isSending && (
                 <div className="rounded-xl bg-[#161616] border border-zinc-800/80 overflow-hidden mb-3">
                   <div className="flex items-center justify-between px-3.5 py-2.5">
@@ -1007,6 +1050,8 @@ export default function HermesWorkstationPage() {
           onChangePrompt={setPrompt}
           onSend={handleSend}
           isSending={isSending}
+          onEnhancePrompt={handleEnhanceComposerPrompt}
+          isEnhancingPrompt={isEnhancingComposerPrompt}
           attachments={attachments}
           onAddAttachment={(att) => setAttachments((prev) => [...prev, att])}
           onRemoveAttachment={(id) =>
@@ -1039,6 +1084,20 @@ export default function HermesWorkstationPage() {
           onChangeMaxTokens={handleChangeMaxTokens}
         />
       </div>
+
+      {/* AI Prompt Architect Drawer ($0 Free Tier) */}
+      <PromptEnhancerDrawer
+        isOpen={isPromptEnhancerOpen}
+        onClose={() => setIsPromptEnhancerOpen(false)}
+        currentComposerPrompt={prompt}
+        onInsertIntoComposer={(enhancedText) => {
+          setPrompt(enhancedText);
+          setToastBanner("⚡ Enhanced English prompt inserted into composer!");
+          setTimeout(() => setToastBanner(null), 3500);
+        }}
+        workspace={workspace}
+        activeMode={activeMode}
+      />
 
       {/* Assign Project Workspace Modal */}
       <WorkspaceModal

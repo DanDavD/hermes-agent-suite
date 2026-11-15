@@ -395,6 +395,7 @@ export async function deleteSessionById(sessionId: string): Promise<void> {
 
 export async function sendChatMessage(params: {
   session_id: string;
+  project_id?: string | null;
   prompt: string;
   mode: WorkflowModeId | string;
   workspace_path?: string;
@@ -414,10 +415,11 @@ export async function sendChatMessage(params: {
 }> {
   const payload = {
     session_id: params.session_id,
+    project_id: params.project_id || "",
     mode: params.mode,
     prompt: params.prompt,
     message: params.prompt,
-    workspace_path: params.include_workspace ? params.workspace_path || "" : "",
+    workspace_path: params.workspace_path || "",
     selected_files: params.include_workspace ? params.selected_files : undefined,
     attachments: (params.attachments || []).map((att) => ({
       filename: att.name,
@@ -674,4 +676,24 @@ export async function updateRuntimeSettings(params: {
     body: JSON.stringify(params),
   });
   return fetchTelemetry();
+}
+
+export async function enhancePromptApi(payload: {
+  prompt: string;
+  history?: { role: string; content: string }[];
+  workspace_name?: string;
+  workspace_files?: string[];
+  active_mode?: string;
+}): Promise<{
+  summary: string;
+  enhanced_prompt: string;
+  explanation: string;
+  tips: string[];
+  model_used: string;
+  cost_usd: number;
+}> {
+  return apiFetch("/api/prompt-enhancer/chat", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
