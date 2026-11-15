@@ -90,6 +90,25 @@ def init_db() -> None:
             except sqlite3.OperationalError:
                 pass
 
+            try:
+                conn.execute(
+                    "ALTER TABLE messages ADD COLUMN actions_executed_json TEXT NOT NULL DEFAULT '[]';"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+            # Sync missing workspace_path on sessions linked to a project
+            conn.execute(
+                """
+                UPDATE sessions
+                SET workspace_path = (
+                    SELECT p.workspace_path FROM projects p WHERE p.id = sessions.project_id
+                )
+                WHERE project_id != '' AND (workspace_path = '' OR workspace_path IS NULL)
+                  AND EXISTS (SELECT 1 FROM projects p WHERE p.id = sessions.project_id AND p.workspace_path != '');
+                """
+            )
+
             # Remove legacy seeded welcome messages, seeded demo projects, and empty placeholder sessions
             conn.execute(
                 "DELETE FROM messages WHERE session_id = 'welcome-session-v2' OR content LIKE '# Welcome to Hermes Studio%';"
@@ -304,6 +323,13 @@ def _row_to_message(row: sqlite3.Row) -> Dict[str, Any]:
         except Exception:
             agent_steps = []
 
+    actions_executed = []
+    if "actions_executed_json" in row.keys():
+        try:
+            actions_executed = json.loads(row["actions_executed_json"] or "[]")
+        except Exception:
+            actions_executed = []
+
     return {
         "id": row["id"],
         "session_id": row["session_id"],
@@ -313,6 +339,7 @@ def _row_to_message(row: sqlite3.Row) -> Dict[str, Any]:
         "attachments": attachments,
         "attachments_json": row["attachments_json"] or "[]",
         "agent_steps": agent_steps,
+        "actions_executed": actions_executed,
         "tokens_used": int(row["tokens_used"] or 0),
         "created_at": row["created_at"],
     }
@@ -498,6 +525,13 @@ def update_session(
         )
         existing_pid = existing["project_id"] if "project_id" in existing.keys() else ""
         new_pid = project_id.strip() if project_id is not None else (existing_pid or "")
+        if new_pid and not new_ws:
+            p_row = conn.execute(
+                "SELECT workspace_path FROM projects WHERE id = ?;",
+                (new_pid,),
+            ).fetchone()
+            if p_row and p_row["workspace_path"]:
+                new_ws = p_row["workspace_path"]
         now = _utc_now_iso()
 
         with conn:
@@ -535,12 +569,14 @@ def add_message(
     attachments: Optional[List[Dict[str, Any]]] = None,
     tokens_used: int = 0,
     agent_steps: Optional[List[Dict[str, Any]]] = None,
+    actions_executed: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Inserts a message into SQLite and updates the parent session's timestamp."""
     msg_id = str(uuid.uuid4())
     now = _utc_now_iso()
     attachments_json = json.dumps(attachments or [])
     steps_json = json.dumps(agent_steps or [])
+    actions_json = json.dumps(actions_executed or [])
 
     conn = get_connection()
     try:
@@ -549,9 +585,9 @@ def add_message(
                 """
                 INSERT INTO messages (
                     id, session_id, role, content, agent_badge,
-                    attachments_json, tokens_used, agent_steps_json, created_at
+                    attachments_json, tokens_used, agent_steps_json, actions_executed_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     msg_id,
@@ -562,6 +598,7 @@ def add_message(
                     attachments_json,
                     int(tokens_used or 0),
                     steps_json,
+                    actions_json,
                     now,
                 ),
             )
@@ -581,6 +618,7 @@ def add_message(
         "attachments": attachments or [],
         "attachments_json": attachments_json,
         "agent_steps": agent_steps or [],
+        "actions_executed": actions_executed or [],
         "tokens_used": int(tokens_used or 0),
         "created_at": now,
     }

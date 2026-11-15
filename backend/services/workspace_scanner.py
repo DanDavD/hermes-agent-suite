@@ -50,6 +50,13 @@ EXTENSION_LANGUAGE_MAP: Dict[str, str] = {
     ".tsx": "TypeScript React",
     ".js": "JavaScript",
     ".jsx": "JavaScript React",
+    ".vue": "Vue",
+    ".html": "HTML",
+    ".css": "CSS",
+    ".scss": "SCSS",
+    ".sql": "SQL",
+    ".toml": "TOML",
+    ".xml": "XML",
     ".json": "JSON",
     ".md": "Markdown",
     ".yaml": "YAML",
@@ -71,11 +78,18 @@ EXTENSION_PRIORITY: Dict[str, int] = {
     ".tsx": 5,
     ".js": 6,
     ".jsx": 6,
-    ".sh": 7,
-    ".md": 8,
-    ".yaml": 9,
-    ".yml": 9,
-    ".json": 10,
+    ".vue": 6,
+    ".html": 7,
+    ".css": 7,
+    ".scss": 7,
+    ".sql": 8,
+    ".sh": 8,
+    ".toml": 9,
+    ".md": 9,
+    ".yaml": 10,
+    ".yml": 10,
+    ".xml": 10,
+    ".json": 11,
 }
 
 # Noisy lockfiles or generated JSON files to skip
@@ -413,7 +427,7 @@ def _prompt_needs_full_code_dump(user_prompt: str, files: List[Dict[str, Any]]) 
         "archivo",
     )
 
-    # Conversational / advisory questions that don't need 12,000 tokens of raw code
+    # Conversational / advisory questions that don't need raw code
     advisory_patterns = (
         "what would be the best model",
         "which model",
@@ -423,13 +437,14 @@ def _prompt_needs_full_code_dump(user_prompt: str, files: List[Dict[str, Any]]) 
         "cual modelo",
         "cuál modelo",
         "how much does",
-        "what is ",
+        "what is the overall structure",
         "who is ",
     )
     if any(pat in q for pat in advisory_patterns):
         return False
 
-    return any(kw in q for kw in code_action_keywords)
+    # If a workspace is linked and it's not an advisory question, inject relevant workspace files
+    return True
 
 
 def build_workspace_context(
@@ -472,11 +487,74 @@ def build_workspace_context(
     # Score files by relevance to user_prompt + extension priority
     q_lower = (user_prompt or "").lower()
 
-    def _file_sort_key(item: Dict[str, Any]) -> Tuple[int, int, str]:
-        stem = Path(item["path"]).stem.lower()
-        name_match = 0 if (len(stem) >= 3 and stem in q_lower) else 1
+    # Strip out Prompt Enhancer's generic "Relevant Workspace Files: a, b, c" or "The project includes the following files:"
+    # when checking which files the user's actual task specifically targets!
+    import re as _re
+    cleaned_q_for_matching = _re.sub(
+        r"(?:relevant workspace files|the project includes the following files)\s*:\s*[^\n]+",
+        "",
+        q_lower,
+        flags=_re.IGNORECASE,
+    )
+
+    GENERIC_STEM_PARTS = {
+        "view",
+        "views",
+        "component",
+        "components",
+        "controller",
+        "controllers",
+        "manager",
+        "managers",
+        "system",
+        "systems",
+        "script",
+        "scripts",
+        "service",
+        "services",
+        "helper",
+        "helpers",
+        "util",
+        "utils",
+        "model",
+        "models",
+        "page",
+        "pages",
+        "index",
+        "main",
+        "base",
+        "core",
+        "test",
+        "tests",
+    }
+
+    def _is_file_directly_targeted(item: Dict[str, Any]) -> bool:
+        rel_l = item["path"].lower()
+        fname_l = Path(item["path"]).name.lower()
+        stem_l = Path(item["path"]).stem.lower()
+        if rel_l in cleaned_q_for_matching or fname_l in cleaned_q_for_matching:
+            return True
+        if len(stem_l) >= 4 and stem_l not in GENERIC_STEM_PARTS and stem_l in cleaned_q_for_matching:
+            return True
+        # Match distinct camelCase / PascalCase words as whole words (excluding generic suffixes like 'View')
+        stem_parts = [
+            p.lower()
+            for p in _re.split(r"[_\-\s]+|(?=[A-Z])", Path(item["path"]).stem)
+            if len(p) >= 4 and p.lower() not in GENERIC_STEM_PARTS
+        ]
+        for part in stem_parts:
+            if _re.search(rf"\b{_re.escape(part)}\b", cleaned_q_for_matching):
+                return True
+        return False
+
+    any_specific_target = any(_is_file_directly_targeted(f) for f in files)
+
+    def _file_sort_key(item: Dict[str, Any]) -> Tuple[int, int, int, str]:
+        targeted = 0 if _is_file_directly_targeted(item) else 1
         ext_prio = EXTENSION_PRIORITY.get(item["extension"], 99)
-        return (name_match, ext_prio, item["path"])
+        # Prefer smaller core files over giant data/modal dumps when untargeted
+        size_bucket = 0 if item["size"] <= 8000 else 1
+        return (targeted, size_bucket, ext_prio, item["path"])
 
     selected_set = {p.strip().lstrip("/") for p in (selected_files or []) if p and p.strip()}
     if selected_set:
@@ -492,17 +570,83 @@ def build_workspace_context(
     else:
         candidate_files = sorted(files, key=_file_sort_key)
 
+    # Smart dynamic budget:
+    # - If user Prompt is provided, cap full-file injection to 6,500 tokens to prevent 20k-token blowouts.
+    # - Large untargeted files (> 3,200 chars) are summarized to their structural header (~25 lines)
+    #   unless explicitly targeted by the user prompt.
+    smart_turn_budget = min(effective_budget, 6500) if user_prompt else effective_budget
+
     file_blocks: List[str] = [header_block]
     injected_paths: List[str] = []
 
     for f in candidate_files:
-        if used_tokens >= effective_budget:
+        if used_tokens >= smart_turn_budget:
             break
 
         full_path = base_path / f["path"]
         try:
             content = full_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
+            continue
+
+        is_targeted = _is_file_directly_targeted(f)
+
+        # When specific files are targeted in the prompt, skip injecting full contents of unrelated sibling files;
+        # only include a lightweight 18-line structural header for small core entry/store files.
+        if any_specific_target and not is_targeted:
+            is_core_entry = any(
+                k in f["path"].lower()
+                for k in ("app.", "store.", "main.", "index.html", "config.", "gamemanager", "matchcontroller")
+            )
+            if not is_core_entry:
+                continue
+            lines = content.splitlines()
+            head_preview = "\n".join(lines[:20])
+            compact_body = (
+                f"{head_preview}\n/* ... [{max(0, len(lines) - 20)} lines omitted — see workspace_summary] ... */"
+                if len(lines) > 20
+                else content
+            )
+            block = (
+                f"<workspace_file path=\"{f['path']}\" language=\"{f['language']}\" summary=\"true\">\n"
+                f"{compact_body}\n"
+                f"</workspace_file>\n"
+            )
+            block_tokens = estimate_tokens_from_text(block)
+            if used_tokens + block_tokens <= smart_turn_budget:
+                file_blocks.append(block)
+                injected_paths.append(f["path"])
+                used_tokens += block_tokens
+            continue
+
+        # When NO specific file is named (general project-wide prompt), compact large files (> 4,500 chars)
+        should_compact_untargeted = (
+            bool(user_prompt)
+            and not is_targeted
+            and (len(content) > 4500 or f["extension"] == ".md")
+        )
+
+        if should_compact_untargeted:
+            lines = content.splitlines()
+            head_preview = "\n".join(lines[:28])
+            tail_preview = "\n".join(lines[-12:]) if len(lines) > 45 else ""
+            compact_body = (
+                f"{head_preview}\n"
+                f"/* ... [{len(lines) - 40} middle lines omitted for token efficiency] ... */\n"
+                f"{tail_preview}"
+                if tail_preview
+                else f"{head_preview}\n/* ... [{len(lines) - 28} lines omitted for token efficiency] ... */"
+            )
+            block = (
+                f"<workspace_file path=\"{f['path']}\" language=\"{f['language']}\" summary=\"true\">\n"
+                f"{compact_body}\n"
+                f"</workspace_file>\n"
+            )
+            block_tokens = estimate_tokens_from_text(block)
+            if used_tokens + block_tokens <= smart_turn_budget:
+                file_blocks.append(block)
+                injected_paths.append(f["path"])
+                used_tokens += block_tokens
             continue
 
         block = (
@@ -512,13 +656,13 @@ def build_workspace_context(
         )
         block_tokens = estimate_tokens_from_text(block)
 
-        if used_tokens + block_tokens > effective_budget:
-            remaining_budget = effective_budget - used_tokens
-            if remaining_budget > 400:
+        if used_tokens + block_tokens > smart_turn_budget:
+            remaining_budget = smart_turn_budget - used_tokens
+            if remaining_budget > 300:
                 char_allowance = remaining_budget * 4
                 truncated_content = (
                     content[:char_allowance]
-                    + f"\n/* ... [Truncated to fit {effective_budget:,} token workspace budget] ... */"
+                    + f"\n/* ... [Truncated to fit {smart_turn_budget:,} token workspace budget] ... */"
                 )
                 block = (
                     f"<workspace_file path=\"{f['path']}\" language=\"{f['language']}\" truncated=\"true\">\n"

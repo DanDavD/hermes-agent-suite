@@ -46,7 +46,7 @@ ENGLISH_TOPIC_MAP = [
 def generate_smart_session_title(prompt: str) -> str:
     """
     Generates a concise, professional Title Case title for the conversation based on the user's prompt.
-    Transforms raw queries into clean titles (e.g. 'ayudame a entender python' -> 'Help with Python Learning').
+    Transforms raw queries and Prompt Enhancer templates into clean titles.
     """
     raw = (prompt or "").strip()
     if not raw:
@@ -61,21 +61,55 @@ def generate_smart_session_title(prompt: str) -> str:
         if re.search(pattern, raw, re.IGNORECASE):
             return title
 
-    # Fallback heuristic: clean out punctuation, prefixes, and format cleanly
-    first_line = raw.splitlines()[0].strip()
-    cleaned = re.sub(r"^[¿\?¡\!#\-\*\s]+", "", first_line)
-    cleaned = re.sub(r"^(?:por favor|can you please|could you|ayudame a|ayuda con|dime|quiero)\s+", "", cleaned, flags=re.IGNORECASE)
+    # Skip generic Prompt Enhancer markdown headers (e.g. "### Role & Objective:", "**Role & Objective**:")
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    meaningful_line = lines[0] if lines else ""
+    header_skip_re = re.compile(
+        r"^(?:[#\*\-\s🎯📋🛠️⚠️📤]*)(?:role\s*&\s*objective|objective|role|technical\s+context|step-by-step|constraints|expected\s+deliverables|context)\s*:?\s*$",
+        re.IGNORECASE,
+    )
+    inline_header_prefix_re = re.compile(
+        r"^(?:[#\*\-\s🎯📋🛠️⚠️📤]*)(?:role\s*&\s*objective|objective|role|task)\s*[\*:\-]+\s*",
+        re.IGNORECASE,
+    )
 
-    words = cleaned.split()
+    for ln in lines:
+        if header_skip_re.match(ln):
+            continue
+        stripped_ln = inline_header_prefix_re.sub("", ln).strip()
+        if stripped_ln:
+            meaningful_line = stripped_ln
+            break
+
+    # Clean out common AI persona / Prompt Enhancer lead-in boilerplate
+    cleaned = re.sub(r"^[¿\?¡\!#\-\*\s🎯📋🛠️⚠️📤]+", "", meaningful_line)
+    cleaned = re.sub(
+        r"^(?:you\s+are\s+(?:an?\s+)?(?:elite\s+|senior\s+|principal\s+)?[a-zA-Z0-9_/\-\s]+?(?:tasked\s+with|who\s+|to\s+)|"
+        r"act\s+as\s+(?:an?\s+)?[a-zA-Z0-9_/\-\s]+?\s+to\s+|"
+        r"explicitly\s+(?:define\s+the\s+role\s+as\s+.*?and\s+the\s+objective\s+to\s+|analyze\s+(?:the\s+parts\s+of\s+(?:the\s+)?)?)|"
+        r"por\s+favor|can\s+you\s+please|could\s+you|ayudame\s+a|ayuda\s+con|dime|quiero|necesito\s+que)\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # Take first sentence or clause
+    first_clause = re.split(r"[\.\;\n]", cleaned)[0].strip()
+    words = (first_clause or cleaned).split()
     if len(words) > 6:
         candidate = " ".join(words[:6])
     else:
         candidate = " ".join(words)
 
-    # Capitalize words cleanly
-    candidate = " ".join(w.capitalize() if len(w) > 2 else w.lower() for w in candidate.split())
-    if len(candidate) > 42:
-        candidate = candidate[:40].rstrip()
+    # Capitalize words cleanly while preserving project identifiers with underscores
+    candidate = " ".join(
+        w if ("_" in w or any(c.isupper() for c in w[1:])) else (w.capitalize() if len(w) > 2 else w.lower())
+        for w in candidate.split()
+    )
+    if candidate:
+        candidate = candidate[0].upper() + candidate[1:]
+    if len(candidate) > 46:
+        candidate = candidate[:44].rstrip()
 
     return candidate or "Engineering Session"
 
@@ -111,89 +145,259 @@ ADVISORY_PATTERNS = (
 EXPLICIT_WORKSPACE_KEYWORDS = (
     "assets/",
     "scripts/",
+    "js/",
+    "css/",
+    "src/",
+    "components/",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".py",
+    ".cs",
+    ".html",
+    ".css",
+    ".vue",
+    "index.html",
+    "app.js",
+    "store.js",
     "matchcontroller",
     "musicmanager",
     "hudview",
     "boardview",
     "gamejam",
     "godboard",
+    "mobirent",
+    "prototipo",
     "csproj",
     "corre los tests",
     "run tests",
     "crea un script",
     "write a script",
-    "modifica el archivo",
+    "modifica",
     "refactor",
+    "implement",
     "implementa",
-    "arregla el bug",
-    "fix the bug",
+    "arregla",
+    "fix",
+    "bug",
+    "error",
     "en mi folder",
     "en mi unity",
     "en mi proyecto",
+    "project",
+    "workspace",
+    "component",
+    "navbar",
+    "login",
+    "modal",
+    "ui",
+    "ux",
+    "design",
+    "style",
+    "layout",
+    "cambia",
+    "change",
+    "update",
+    "actualiza",
+    "apply",
+    "aplica",
+    "code",
+    "codigo",
+    "código",
+    "archivo",
+    "file",
 )
 
 
 def prompt_needs_workspace_injection(prompt: str) -> bool:
     """
-    Returns True ONLY if the prompt explicitly requires inspecting or editing local workspace code.
-    Purely advisory, conceptual, or model comparison queries return False, conserving 10k-50k tokens.
+    Returns True whenever the user is giving a task or question related to their active project workspace.
+    Only returns False for bare greetings ('hola', 'hi') or purely meta questions about AI model pricing/selection,
+    ensuring the agent always works directly inside the active project folder.
     """
-    q = (prompt or "").lower()
+    q = (prompt or "").strip().lower()
     if not q:
         return False
 
-    # If the user explicitly asks an advisory/model question without asking for script creation
-    if any(pat in q for pat in ADVISORY_PATTERNS) and not any(kw in q for kw in ("crea", "escribe", "write", "implement", "modify")):
+    # Bare greetings don't need workspace file dumps
+    if q in ("hola", "hi", "hello", "hey", "buenas", "buenos dias", "buenas tardes", "gracias", "thanks", "ok"):
         return False
 
-    return any(kw in q for kw in EXPLICIT_WORKSPACE_KEYWORDS)
+    # If the user explicitly asks an advisory/model pricing question without asking for code changes
+    if any(pat in q for pat in ADVISORY_PATTERNS) and not any(
+        kw in q for kw in ("crea", "escribe", "write", "implement", "modify", "refactor", "cambia", "fix", "arregla")
+    ):
+        return False
+
+    return True
 
 
 # ==============================================================================
-# 3. AUTONOMOUS CODE EXTRACTION & DISK APPLICATOR
+# 3. AUTONOMOUS CODE EXTRACTION, SEARCH/REPLACE PATCHING & DISK APPLICATOR
 # ==============================================================================
 
-# Regex to detect code blocks with explicit target filepaths
-# Matches:
-# ```csharp // File: Assets/_Project/Scripts/Audio/MusicManager.cs ... ```
-# ```csharp filepath="Assets/..." ... ```
-# // File: Assets/... inside a code block
+SUPPORTED_AUTONOMOUS_EXTENSIONS = (
+    ".cs",
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".vue",
+    ".html",
+    ".css",
+    ".scss",
+    ".json",
+    ".md",
+    ".shader",
+    ".compute",
+    ".hlsl",
+    ".cginc",
+    ".uss",
+    ".uxml",
+    ".sh",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".xml",
+    ".sql",
+)
+
 CODE_BLOCK_PATTERN = re.compile(
-    r"```(?:[a-zA-Z0-9_\+#\-]+)?(?:\s+(?:filepath=|file=)?[\"']?([a-zA-Z0-9_\./\\-]+)[\"']?)?\n(.*?)```",
+    r"```(?:[a-zA-Z0-9_\+#\-]+)?(?::|\s+)?(?:\s*(?:filepath=|file=)?[\"']?([a-zA-Z0-9_\./\\-]+)[\"']?)?\n(.*?)```",
     re.DOTALL,
 )
 
 INLINE_FILE_HEADER_PATTERN = re.compile(
-    r"^(?://|#|/\*|<!--)\s*(?:File|Path|Target|Archivo):\s*([a-zA-Z0-9_\./\\-]+)",
+    r"^(?://|#|/\*|<!--|--)\s*(?:File|Path|Target|Archivo|Filename):\s*([a-zA-Z0-9_\./\\-]+?)(?:\s*(?:\*/|-->))?\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
+
+PRECEDING_FILE_LABEL_PATTERN = re.compile(
+    r"(?:###+|\*\*|File:|Archivo:|Target:)\s*`?([a-zA-Z0-9_\-]+(?:/[a-zA-Z0-9_\.\-]+)+\.[a-zA-Z0-9]+|[a-zA-Z0-9_\-]+\.(?:html|css|js|ts|tsx|py|cs|json|vue|sh))`?\s*(?:\*\*)?:?\s*$",
+    re.IGNORECASE,
+)
+
+BEFORE_LABEL_PATTERN = re.compile(
+    r"(?:\*\*Before\s*(?:\([^\)]*\))?\s*:?\*\*|###+\s*Before\b|^Before\s*:)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+SEARCH_REPLACE_PATTERN = re.compile(
+    r"<<<<<<<\s*SEARCH[ \t]*\r?\n(.*?)\r?\n=======[ \t]*\r?\n(.*?)\r?\n>>>>>>>\s*REPLACE",
+    re.DOTALL,
+)
+
+
+def _strip_file_header_comment(code: str) -> str:
+    """Removes the synthetic `// File: ...` header line when applying patches or writing clean files if needed."""
+    lines = code.splitlines()
+    if lines and INLINE_FILE_HEADER_PATTERN.match(lines[0].strip()):
+        return "\n".join(lines[1:]).lstrip("\n")
+    return code
+
+
+def apply_search_replace_blocks(existing_content: str, patch_body: str) -> Optional[str]:
+    """
+    Applies one or more `<<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE` blocks to `existing_content`.
+    Returns the updated file string if at least one block matched, or None if no blocks matched.
+    """
+    matches = list(SEARCH_REPLACE_PATTERN.finditer(patch_body))
+    if not matches:
+        return None
+
+    updated = existing_content
+    applied_any = False
+
+    for m in matches:
+        search_chunk = m.group(1)
+        replace_chunk = m.group(2)
+
+        # 1. Exact substring match
+        if search_chunk in updated:
+            updated = updated.replace(search_chunk, replace_chunk, 1)
+            applied_any = True
+            continue
+
+        # 2. CRLF / LF normalized match
+        norm_updated = updated.replace("\r\n", "\n")
+        norm_search = search_chunk.replace("\r\n", "\n").strip("\n")
+        norm_replace = replace_chunk.replace("\r\n", "\n").strip("\n")
+        if norm_search and norm_search in norm_updated:
+            updated = norm_updated.replace(norm_search, norm_replace, 1)
+            applied_any = True
+            continue
+
+        # 3. Line-by-line trimmed match fallback (handles indentation drift)
+        search_lines = [ln.strip() for ln in norm_search.splitlines() if ln.strip()]
+        if search_lines:
+            orig_lines = norm_updated.splitlines()
+            n_s = len(search_lines)
+            for idx in range(len(orig_lines) - n_s + 1):
+                window = [orig_lines[idx + k].strip() for k in range(n_s)]
+                if window == search_lines:
+                    new_lines = orig_lines[:idx] + norm_replace.splitlines() + orig_lines[idx + n_s :]
+                    updated = "\n".join(new_lines)
+                    if norm_updated.endswith("\n"):
+                        updated += "\n"
+                    applied_any = True
+                    break
+
+    return updated if applied_any else None
 
 
 def extract_files_from_markdown(content: str) -> List[Tuple[str, str]]:
     """
-    Extracts all files and code bodies that have a designated file path target.
-    Returns list of (relative_path, file_content).
+    Extracts all files and code bodies (or SEARCH/REPLACE patches) that have a designated file path target.
+    Skips blocks explicitly labeled as 'Before:' comparisons so old code never overwrites refactored code.
+    Returns list of (relative_path, file_content_or_patch).
     """
     results: List[Tuple[str, str]] = []
 
-    # 1. Search markdown code blocks
     for match in CODE_BLOCK_PATTERN.finditer(content):
         header_attr_path = match.group(1)
         block_body = match.group(2)
 
+        # Check the immediate preceding markdown heading/label to see if this block is a "Before:" example
+        preceding_text = content[max(0, match.start() - 160) : match.start()].strip()
+        last_prec_line = preceding_text.splitlines()[-1].strip() if preceding_text else ""
+        if BEFORE_LABEL_PATTERN.search(last_prec_line):
+            continue
+
         target_path: Optional[str] = None
-        if header_attr_path:
-            target_path = header_attr_path.strip().strip("\"'")
+        if header_attr_path and "." in header_attr_path:
+            target_path = header_attr_path.strip().strip("\"'`")
         else:
-            # Check the first 3 lines of block body for // File: <relpath>
-            header_match = INLINE_FILE_HEADER_PATTERN.search(block_body[:300])
+            # Check the first 4 lines of block body for // File: <relpath>
+            first_lines = "\n".join(block_body.splitlines()[:4])
+            header_match = INLINE_FILE_HEADER_PATTERN.search(first_lines)
             if header_match:
                 target_path = header_match.group(1).strip()
+            else:
+                # Check the markdown line immediately preceding the code block
+                last_prec_line = preceding_text.splitlines()[-1].strip() if preceding_text else ""
+                prec_match = PRECEDING_FILE_LABEL_PATTERN.search(last_prec_line)
+                if prec_match:
+                    target_path = prec_match.group(1).strip()
+                else:
+                    # Auto-inference fallback for Unity C# / C# if model forgot header
+                    class_match = re.search(
+                        r"(?:public\s+|internal\s+)?(?:partial\s+)?(?:class|struct|interface|enum)\s+([A-Za-z0-9_]+)",
+                        block_body[:500],
+                    )
+                    if class_match:
+                        class_name = class_match.group(1)
+                        if any(k in block_body for k in ("using UnityEngine", "MonoBehaviour", "ScriptableObject", "UnityEditor")):
+                            if "Editor" in class_name or "using UnityEditor" in block_body:
+                                target_path = f"Assets/_Project/Editor/{class_name}.cs"
+                            else:
+                                target_path = f"Assets/Scripts/{class_name}.cs"
+                        else:
+                            target_path = f"Scripts/{class_name}.cs"
 
         if target_path and block_body.strip():
-            # Clean leading/trailing quotes or brackets
-            clean_path = target_path.strip("`'\"[]")
-            if any(clean_path.endswith(ext) for ext in (".cs", ".py", ".ts", ".tsx", ".js", ".json", ".md", ".shader", ".uss", ".uxml", ".sh")):
+            clean_path = target_path.strip("`'\"[]").lstrip("/")
+            if any(clean_path.lower().endswith(ext) for ext in SUPPORTED_AUTONOMOUS_EXTENSIONS):
                 results.append((clean_path, block_body))
 
     return results
@@ -201,7 +405,8 @@ def extract_files_from_markdown(content: str) -> List[Tuple[str, str]]:
 
 def apply_autonomous_files(folder_path: str, content: str) -> List[Dict[str, Any]]:
     """
-    Parses the generated response for file blocks and writes them directly to the active workspace on disk.
+    Parses the generated response for file blocks or SEARCH/REPLACE patches and writes them
+    directly to the active workspace on disk.
     Returns a list of executed actions.
     """
     if not folder_path or not os.path.isdir(folder_path):
@@ -209,17 +414,54 @@ def apply_autonomous_files(folder_path: str, content: str) -> List[Dict[str, Any
 
     extracted = extract_files_from_markdown(content)
     actions: List[Dict[str, Any]] = []
+    base_dir = Path(folder_path).expanduser().resolve()
 
     for rel_path, code in extracted:
         try:
-            write_res = write_workspace_file(folder_path=folder_path, relative_path=rel_path, content=code)
+            target_full = (base_dir / rel_path.lstrip("/")).resolve()
+            existed_before = target_full.is_file()
+
+            # Check if this code block contains surgical SEARCH/REPLACE diff blocks
+            if "<<<<<<< SEARCH" in code and ">>>>>>> REPLACE" in code:
+                if existed_before:
+                    existing_text = target_full.read_text(encoding="utf-8", errors="replace")
+                    patched_text = apply_search_replace_blocks(existing_text, code)
+                    if patched_text is None:
+                        actions.append({
+                            "type": "file_error",
+                            "path": rel_path,
+                            "status": "failed",
+                            "details": f"SEARCH block did not match existing content in {rel_path}",
+                        })
+                        continue
+                    final_content = patched_text
+                    action_mode = "patched"
+                else:
+                    # File doesn't exist yet; extract the REPLACE side
+                    matches = list(SEARCH_REPLACE_PATTERN.finditer(code))
+                    final_content = "\n".join(m.group(2) for m in matches) if matches else _strip_file_header_comment(code)
+                    action_mode = "created"
+            else:
+                # Full file write (strip synthetic `// File: ...` line for HTML/JSON/CSS if needed so it stays valid)
+                ext_lower = Path(rel_path).suffix.lower()
+                if ext_lower in (".json", ".html", ".css", ".vue", ".md"):
+                    final_content = _strip_file_header_comment(code)
+                else:
+                    final_content = code
+                action_mode = "modified" if existed_before else "created"
+
+            write_res = write_workspace_file(
+                folder_path=folder_path,
+                relative_path=rel_path,
+                content=final_content,
+            )
             actions.append({
                 "type": "file_written",
                 "path": write_res["relative_path"],
                 "full_path": write_res["full_path"],
                 "bytes": write_res["bytes_written"],
-                "status": "created" if not os.path.exists(write_res["full_path"]) else "modified",
-                "details": f"Auto-applied {write_res['relative_path']} ({write_res['bytes_written']:,} bytes)",
+                "status": action_mode,
+                "details": f"Auto-{action_mode} {write_res['relative_path']} ({write_res['bytes_written']:,} bytes)",
             })
         except Exception as exc:
             actions.append({
@@ -308,6 +550,39 @@ def run_automated_workspace_tests(folder_path: str) -> Optional[Dict[str, Any]]:
                 "passed": passed,
                 "summary": res.stdout.strip().splitlines()[-1] if res.stdout else "Passed",
                 "output": res.stdout[:500],
+            }
+        except Exception:
+            pass
+
+    # Check for JavaScript syntax verification (node --check) on JS projects without a heavy test runner
+    js_files = list(p.glob("js/**/*.js")) or list(p.glob("*.js"))
+    if js_files:
+        try:
+            checked = 0
+            failed_files: List[str] = []
+            for jf in js_files[:15]:
+                res = subprocess.run(
+                    ["node", "--check", str(jf)],
+                    cwd=folder_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                checked += 1
+                if res.returncode != 0:
+                    rel_jf = jf.relative_to(p).as_posix()
+                    failed_files.append(f"{rel_jf}: {(res.stderr or '').splitlines()[0] if res.stderr else 'SyntaxError'}")
+            passed = len(failed_files) == 0
+            summary = (
+                f"Verified {checked} JS module(s): 0 syntax errors"
+                if passed
+                else f"Syntax errors in {len(failed_files)} file(s): {'; '.join(failed_files[:2])}"
+            )
+            return {
+                "runner": "node --check",
+                "passed": passed,
+                "summary": summary,
+                "output": "\n".join(failed_files)[:500] if failed_files else summary,
             }
         except Exception:
             return None

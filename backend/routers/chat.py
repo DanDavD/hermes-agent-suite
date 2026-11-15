@@ -10,7 +10,9 @@ from backend.config import get_mode_badge, resolve_mode
 from backend.database import (
     add_message,
     create_session,
+    get_project,
     get_session,
+    list_projects,
     update_session,
 )
 from backend.models.schemas import ChatRequest, ChatResponse
@@ -49,23 +51,37 @@ def _prepare_session_and_context(payload: ChatRequest) -> Dict[str, Any]:
         curr_title = session.get("title", "")
         new_title = None
         is_generic_title = (
-            curr_title in ("New Session", "Untitled Session", "New Engineering Session", "New Chat", "Engineering Session")
+            curr_title in (
+                "New Session",
+                "Untitled Session",
+                "New Engineering Session",
+                "New Chat",
+                "Engineering Session",
+                "Role & Objective:",
+            )
+            or curr_title.startswith("🎯")
+            or curr_title.startswith("###")
             or curr_title.endswith("...")
             or len(session.get("messages", [])) <= 1
         )
         if is_generic_title and payload.prompt.strip():
             new_title = smart_title
 
-        new_ws = (
-            payload.workspace_path
-            if payload.workspace_path is not None and payload.workspace_path != ""
-            else session.get("workspace_path", "")
-        )
         new_pid = (
             payload.project_id
             if payload.project_id is not None and payload.project_id != ""
             else session.get("project_id", "")
         )
+        new_ws = (
+            payload.workspace_path
+            if payload.workspace_path is not None and payload.workspace_path != ""
+            else session.get("workspace_path", "")
+        )
+        if not new_ws and new_pid:
+            proj_obj = get_project(new_pid)
+            if proj_obj and proj_obj.get("workspace_path"):
+                new_ws = proj_obj["workspace_path"]
+
         session = update_session(
             session_id=session["id"],
             title=new_title,
@@ -75,11 +91,37 @@ def _prepare_session_and_context(payload: ChatRequest) -> Dict[str, Any]:
         ) or session
 
     session_id = session["id"]
+    active_project_id = (
+        payload.project_id
+        if payload.project_id is not None and payload.project_id != ""
+        else session.get("project_id", "")
+    )
     active_workspace = (
         payload.workspace_path
         if payload.workspace_path is not None and payload.workspace_path != ""
         else session.get("workspace_path", "")
     )
+    if not active_workspace and active_project_id:
+        proj_obj = get_project(active_project_id)
+        if proj_obj and proj_obj.get("workspace_path"):
+            active_workspace = proj_obj["workspace_path"]
+            update_session(session_id=session_id, workspace_path=active_workspace)
+
+    # Fallback: if prompt explicitly names an existing local project, auto-resolve its workspace_path
+    if not active_workspace:
+        q_low = (payload.prompt or "").lower()
+        for proj_item in list_projects():
+            p_name = (proj_item.get("name") or "").lower()
+            p_ws = proj_item.get("workspace_path") or ""
+            if p_name and len(p_name) >= 4 and p_name in q_low and p_ws:
+                active_workspace = p_ws
+                active_project_id = proj_item["id"]
+                update_session(
+                    session_id=session_id,
+                    workspace_path=active_workspace,
+                    project_id=active_project_id,
+                )
+                break
 
     # Extract prior conversation history (capped to last 12 turns)
     prior_messages: List[Dict[str, str]] = []
@@ -226,6 +268,7 @@ async def execute_chat(payload: ChatRequest) -> Any:
         attachments=[],
         tokens_used=tokens_used,
         agent_steps=agent_steps,
+        actions_executed=actions_executed,
     )
 
     return {
@@ -297,6 +340,7 @@ async def stream_chat(payload: ChatRequest) -> StreamingResponse:
                 attachments=[],
                 tokens_used=tokens_used,
                 agent_steps=agent_steps,
+                actions_executed=actions_executed,
             )
 
             final_payload = {
