@@ -4,7 +4,8 @@ Autonomous AI Engineering Workbench & Local Workspace Context Engine
 
 Author: Daniel (DanDavD)  
 Stack: Next.js 14 (TypeScript, Tailwind CSS) · FastAPI (Python 3.11, Pydantic v2) · SQLite (WAL mode) · OpenRouter Multi-Model Routing  
-Status: Production v2.0 (Local-First)
+Status: Production v2.0 (Local-First)  
+Roadmap: [Trello Board (Sprint Plan & Delivery)](https://trello.com/b/vDr1joge/hermes-studio-v2-product-dev-ai-engineering-nov-12-14)
 
 ---
 
