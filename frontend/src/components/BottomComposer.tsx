@@ -157,26 +157,98 @@ export default function BottomComposer({
     }
   };
 
+  const addImageFileToAttachments = (file: File, customName?: string) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : "";
+      const mimeExt = file.type.split("/")[1]?.toLowerCase() || "png";
+      const ext =
+        file.name && file.name.includes(".")
+          ? file.name.split(".").pop()?.toLowerCase() || mimeExt
+          : mimeExt;
+      const finalName =
+        customName ||
+        (file.name && file.name !== "image.png"
+          ? file.name
+          : `clipboard-screenshot-${new Date().toISOString().slice(11, 19).replace(/:/g, "")}.${ext}`);
+      onAddAttachment({
+        id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: finalName,
+        type: "image",
+        extension: ext,
+        sizeBytes: file.size,
+        content: dataUrl,
+        previewUrl: dataUrl,
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const addCodeFileToAttachments = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const textContent = typeof reader.result === "string" ? reader.result : "";
+      const ext = file.name.split(".").pop()?.toLowerCase() || "txt";
+      onAddAttachment({
+        id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: file.name,
+        type: "code",
+        extension: ext,
+        sizeBytes: file.size,
+        content: textContent,
+      });
+    };
+    reader.readAsText(file);
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    let pastedImageCount = 0;
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) {
+          pastedImageCount += 1;
+          const ext = file.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+          const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, "");
+          addImageFileToAttachments(
+            file,
+            `clipboard-${stamp}-${pastedImageCount}.${ext}`
+          );
+        }
+      }
+    }
+
+    // If only an image was on the clipboard (no plain text), prevent default empty paste
+    if (pastedImageCount > 0 && !e.clipboardData.getData("text/plain")) {
+      e.preventDefault();
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+
+    Array.from(files).forEach((file) => {
+      if (file.type.startsWith("image/")) {
+        addImageFileToAttachments(file);
+      } else {
+        addCodeFileToAttachments(file);
+      }
+    });
+  };
+
   const handleScriptFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
     Array.from(files).forEach((file) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const textContent =
-          typeof reader.result === "string" ? reader.result : "";
-        const ext = file.name.split(".").pop()?.toLowerCase() || "txt";
-        onAddAttachment({
-          id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          name: file.name,
-          type: "code",
-          extension: ext,
-          sizeBytes: file.size,
-          content: textContent,
-        });
-      };
-      reader.readAsText(file);
+      addCodeFileToAttachments(file);
     });
 
     e.target.value = "";
@@ -188,21 +260,7 @@ export default function BottomComposer({
     if (!files || files.length === 0) return;
 
     Array.from(files).forEach((file) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = typeof reader.result === "string" ? reader.result : "";
-        const ext = file.name.split(".").pop()?.toLowerCase() || "png";
-        onAddAttachment({
-          id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          name: file.name,
-          type: "image",
-          extension: ext,
-          sizeBytes: file.size,
-          content: dataUrl,
-          previewUrl: dataUrl,
-        });
-      };
-      reader.readAsDataURL(file);
+      addImageFileToAttachments(file);
     });
 
     e.target.value = "";
@@ -251,30 +309,41 @@ export default function BottomComposer({
         />
 
         {/* Layer 1: The Input Box (Claude Desktop style #1F1F1F rounded-2xl) */}
-        <div className="bg-[#1F1F1F] border border-zinc-800/90 focus-within:border-zinc-700 rounded-2xl px-4 py-2.5 transition-colors">
+        <div
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={handleDrop}
+          className="bg-[#1F1F1F] border border-zinc-800/90 focus-within:border-zinc-700 rounded-2xl px-4 py-2.5 transition-colors"
+        >
           {/* Attached Files & Image Previews Row */}
           {attachments.length > 0 && (
             <div className="pb-2 mb-2 flex flex-wrap items-center gap-2 border-b border-zinc-800/70">
               {attachments.map((att) => (
                 <div
                   key={att.id}
-                  className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#141414] border border-zinc-800 text-xs"
+                  className="flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl bg-[#141414] border border-zinc-800/90 text-xs group"
                 >
-                  {att.type === "image" && att.previewUrl ? (
+                  {att.type === "image" && (att.previewUrl || att.content?.startsWith("data:image/")) ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={att.previewUrl}
+                      src={att.previewUrl || att.content}
                       alt={att.name}
-                      className="w-5 h-5 rounded object-cover"
+                      className="w-9 h-9 rounded-lg object-cover border border-zinc-700/70 shrink-0"
                     />
                   ) : null}
-                  <span className="font-mono text-[11px] text-zinc-300 truncate max-w-[160px]">
-                    {att.name}
-                  </span>
+                  <div className="flex flex-col min-w-0">
+                    <span className="font-mono text-[11px] text-zinc-200 truncate max-w-[160px]">
+                      {att.name}
+                    </span>
+                    <span className="text-[10px] font-mono text-zinc-500">
+                      {att.type === "image" ? "Vision Image" : "Code / Text"}
+                      {att.sizeBytes ? ` · ${Math.max(1, Math.round(att.sizeBytes / 1024))} KB` : ""}
+                    </span>
+                  </div>
                   <button
                     type="button"
                     onClick={() => onRemoveAttachment(att.id)}
-                    className="text-zinc-500 hover:text-zinc-200 px-1"
+                    className="text-zinc-500 hover:text-zinc-200 px-1 text-sm leading-none"
+                    title="Remove attachment"
                   >
                     ×
                   </button>
@@ -291,7 +360,7 @@ export default function BottomComposer({
                 type="button"
                 onClick={() => setAttachMenuOpen((prev) => !prev)}
                 className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-[#2A2A2A] transition-colors"
-                title="Attach script or image"
+                title="Attach script or image (or paste image with Cmd+V)"
               >
                 <svg
                   className="w-5 h-5"
@@ -333,8 +402,9 @@ export default function BottomComposer({
               value={prompt}
               onChange={(e) => onChangePrompt(e.target.value)}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               disabled={isSending}
-              placeholder="Describe a task or ask a question"
+              placeholder="Describe a task, ask a question, or paste an image (Cmd+V)"
               className="flex-1 bg-transparent text-zinc-100 placeholder-zinc-500 text-sm leading-5 py-1 focus:outline-none resize-none min-h-[28px] max-h-[180px]"
             />
 
@@ -346,13 +416,17 @@ export default function BottomComposer({
                   <button
                     type="button"
                     onClick={onEnhancePrompt}
-                    disabled={isSending || isEnhancingPrompt || !prompt.trim()}
+                    disabled={
+                      isSending ||
+                      isEnhancingPrompt ||
+                      (!prompt.trim() && attachments.length === 0)
+                    }
                     className={`relative w-7 h-7 rounded-full flex items-center justify-center transition-all overflow-hidden ${
                       isEnhancingPrompt
                         ? "bg-[#14231b] text-emerald-300 border border-emerald-500/60 shadow-[0_0_12px_rgba(16,185,129,0.35)] cursor-wait"
                         : enhanceProgress === 100
                         ? "bg-emerald-500 text-black border border-emerald-400 scale-105"
-                        : prompt.trim()
+                        : prompt.trim() || attachments.length > 0
                         ? "bg-[#222222] hover:bg-[#2A2A2A] text-emerald-400 hover:text-emerald-300 border border-emerald-500/30 hover:border-emerald-500/60 hover:scale-105 shadow-sm"
                         : "bg-[#202020]/50 text-zinc-600 border border-zinc-800/80 cursor-not-allowed"
                     }`}

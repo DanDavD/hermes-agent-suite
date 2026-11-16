@@ -21,6 +21,7 @@ async def dispatch_workflow(
     max_tokens: Optional[int] = None,
     sub_mode: Optional[str] = None,
     on_step: StepCallback = None,
+    image_urls: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Routes a chat request to the selected multi-agent squad or raw model."""
     resolved = resolve_mode(mode)
@@ -68,4 +69,5 @@ async def dispatch_workflow(
         conversation_history=conversation_history,
         temperature=temperature,
         max_tokens=max_tokens,
+        image_urls=image_urls,
     )

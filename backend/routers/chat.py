@@ -23,7 +23,11 @@ from backend.services.autonomous_executor import (
     run_automated_workspace_tests,
     strip_workspace_code_blocks,
 )
-from backend.services.openrouter_client import format_attachments_block
+from backend.services.image_analyzer import is_image_attachment
+from backend.services.openrouter_client import (
+    build_multimodal_attachments_block,
+    format_attachments_block,
+)
 from backend.services.workflows import dispatch_workflow
 from backend.services.workspace_scanner import build_workspace_context
 
@@ -149,6 +153,11 @@ def _prepare_session_and_context(payload: ChatRequest) -> Dict[str, Any]:
             "filename": a["filename"],
             "content_type": a.get("content_type", "text/plain"),
             "size": a.get("size") or len(a.get("content", "")),
+            **(
+                {"content": a.get("content", "")}
+                if is_image_attachment(a) and len(a.get("content", "")) <= 1_500_000
+                else {}
+            ),
         }
         for a in raw_attachments
     ]
@@ -174,6 +183,7 @@ def _prepare_session_and_context(payload: ChatRequest) -> Dict[str, Any]:
         "injected_files": injected_files,
         "injected_tokens": injected_tokens,
         "attachments_block": attachments_block,
+        "raw_attachments": raw_attachments,
         "user_msg": user_msg,
     }
 
@@ -221,7 +231,9 @@ async def execute_chat(payload: ChatRequest) -> Any:
     and file attachments, persists messages to SQLite, auto-writes files, and returns the result.
     """
     if not payload.prompt or not payload.prompt.strip():
-        raise HTTPException(status_code=400, detail="Prompt cannot be empty.")
+        if not payload.attachments:
+            raise HTTPException(status_code=400, detail="Prompt cannot be empty.")
+        payload.prompt = "Analyze the attached image(s) and provide context, extracted messages, and technical solutions."
 
     if payload.stream:
         return await stream_chat(payload)
@@ -230,16 +242,26 @@ async def execute_chat(payload: ChatRequest) -> Any:
     session_id = prep["session_id"]
     resolved_mode = prep["resolved_mode"]
 
+    attachments_block = prep["attachments_block"]
+    image_urls: List[str] = []
+    vision_tokens = 0
+    if any(is_image_attachment(a) for a in prep["raw_attachments"]):
+        attachments_block, image_urls, vision_tokens = await build_multimodal_attachments_block(
+            attachments=prep["raw_attachments"],
+            user_prompt=payload.prompt,
+        )
+
     try:
         result = await dispatch_workflow(
             mode=resolved_mode,
             prompt=payload.prompt,
             workspace_context=prep["workspace_context"],
-            attachments_block=prep["attachments_block"],
+            attachments_block=attachments_block,
             conversation_history=prep["prior_messages"],
             temperature=payload.temperature,
             max_tokens=payload.max_tokens,
             sub_mode=payload.sub_mode,
+            image_urls=image_urls,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -252,7 +274,7 @@ async def execute_chat(payload: ChatRequest) -> Any:
     assistant_content = result["response"]
     agent_badge = result.get("agent_badge") or get_mode_badge(resolved_mode)
     agent_steps = result.get("agent_steps", [])
-    tokens_used = int(result.get("tokens_used", 0))
+    tokens_used = int(result.get("tokens_used", 0)) + vision_tokens
 
     # Autonomous execution: direct disk writing & automated test runner
     actions_executed = _execute_autonomous_post_processing(
@@ -301,7 +323,9 @@ async def stream_chat(payload: ChatRequest) -> StreamingResponse:
     executes autonomous file writes, and delivers final completion payload.
     """
     if not payload.prompt or not payload.prompt.strip():
-        raise HTTPException(status_code=400, detail="Prompt cannot be empty.")
+        if not payload.attachments:
+            raise HTTPException(status_code=400, detail="Prompt cannot be empty.")
+        payload.prompt = "Analyze the attached image(s) and provide context, extracted messages, and technical solutions."
 
     prep = _prepare_session_and_context(payload)
     session_id = prep["session_id"]
@@ -314,21 +338,31 @@ async def stream_chat(payload: ChatRequest) -> StreamingResponse:
 
     async def run_pipeline() -> None:
         try:
+            attachments_block = prep["attachments_block"]
+            image_urls: List[str] = []
+            vision_tokens = 0
+            if any(is_image_attachment(a) for a in prep["raw_attachments"]):
+                attachments_block, image_urls, vision_tokens = await build_multimodal_attachments_block(
+                    attachments=prep["raw_attachments"],
+                    user_prompt=payload.prompt,
+                )
+
             result = await dispatch_workflow(
                 mode=resolved_mode,
                 prompt=payload.prompt,
                 workspace_context=prep["workspace_context"],
-                attachments_block=prep["attachments_block"],
+                attachments_block=attachments_block,
                 conversation_history=prep["prior_messages"],
                 temperature=payload.temperature,
                 max_tokens=payload.max_tokens,
                 sub_mode=payload.sub_mode,
                 on_step=on_step_callback,
+                image_urls=image_urls,
             )
             assistant_content = result["response"]
             agent_badge = result.get("agent_badge") or get_mode_badge(resolved_mode)
             agent_steps = result.get("agent_steps", [])
-            tokens_used = int(result.get("tokens_used", 0))
+            tokens_used = int(result.get("tokens_used", 0)) + vision_tokens
 
             # Autonomous execution: direct disk writing & automated test runner
             actions_executed = _execute_autonomous_post_processing(

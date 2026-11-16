@@ -18,6 +18,13 @@ from backend.config import (
     resolve_mode,
     runtime_settings,
 )
+from backend.services.image_analyzer import (
+    analyze_images_with_vision,
+    ensure_image_data_url,
+    extract_image_metadata,
+    is_image_attachment,
+    split_attachments,
+)
 from backend.services.workspace_scanner import estimate_tokens_from_text
 
 DEFAULT_HEADERS = {
@@ -58,7 +65,11 @@ def get_async_client(api_key: Optional[str] = None) -> AsyncOpenAI:
 
 
 def format_attachments_block(attachments: Optional[List[Any]]) -> str:
-    """Formats attached files (plain text or base64 encoded text) into XML context blocks."""
+    """
+    Formats attached text/code files into XML context blocks while safeguarding
+    against binary image corruption (images are represented as clean metadata
+    or analyzed via `build_multimodal_attachments_block`).
+    """
     if not attachments:
         return ""
 
@@ -76,12 +87,30 @@ def format_attachments_block(attachments: Optional[List[Any]]) -> str:
         if not raw_content:
             continue
 
+        # Never decode binary images as UTF-8 text garbage
+        if is_image_attachment(item):
+            data_url = ensure_image_data_url(raw_content, ctype)
+            meta = extract_image_metadata(data_url)
+            dims = f"{meta['width']}x{meta['height']}px" if meta.get("width") and meta.get("height") else "image"
+            size_kb = round(meta.get("size_bytes", 0) / 1024, 1)
+            blocks.append(
+                f"<attached_image filename=\"{fname}\" content_type=\"{ctype}\" "
+                f"format=\"{meta.get('format', 'unknown')}\" dimensions=\"{dims}\" size_kb=\"{size_kb}\" />"
+            )
+            continue
+
         decoded_text = raw_content
         # Handle data URL or base64-encoded text attachments if applicable
         if raw_content.startswith("data:") and ";base64," in raw_content:
             b64_part = raw_content.split(";base64,", 1)[1]
             try:
-                decoded_text = base64.b64decode(b64_part).decode("utf-8", errors="replace")
+                raw_bytes = base64.b64decode(b64_part)
+                decoded_candidate = raw_bytes.decode("utf-8", errors="replace")
+                # Guard against binary files disguised as text/plain
+                if decoded_candidate.count("\ufffd") > max(10, len(decoded_candidate) // 10):
+                    decoded_text = f"[Binary attachment: {fname} ({ctype}, {len(raw_bytes)} bytes)]"
+                else:
+                    decoded_text = decoded_candidate
             except Exception:
                 decoded_text = f"[Binary attachment: {fname} ({ctype})]"
 
@@ -94,6 +123,54 @@ def format_attachments_block(attachments: Optional[List[Any]]) -> str:
     if not blocks:
         return ""
     return "\n\n### Attached Files\n" + "\n\n".join(blocks)
+
+
+async def build_multimodal_attachments_block(
+    attachments: Optional[List[Any]],
+    user_prompt: str = "",
+    api_key: Optional[str] = None,
+) -> Tuple[str, List[str], int]:
+    """
+    Processes both text attachments and clipboard/uploaded image attachments.
+    Extracts context, situation, and visible messages from images via vision analysis,
+    and returns (combined_context_block, image_data_urls, vision_tokens_used).
+    """
+    if not attachments:
+        return "", [], 0
+
+    text_items, image_items = split_attachments(attachments)
+    sections: List[str] = []
+
+    if text_items:
+        text_block = format_attachments_block(text_items).strip()
+        if text_block:
+            sections.append(text_block)
+
+    image_urls: List[str] = []
+    vision_tokens = 0
+    if image_items:
+        image_urls = [img["data_url"] for img in image_items if img.get("data_url")]
+        vision_block, vision_tokens = await analyze_images_with_vision(
+            image_attachments=image_items,
+            user_prompt=user_prompt,
+            api_key=api_key,
+        )
+        if vision_block:
+            sections.append(f"### Multimodal Image Context Analysis\n{vision_block}")
+
+    combined = "\n\n".join(sections)
+    return combined, image_urls, vision_tokens
+
+
+VISION_CAPABLE_SLUGS = (
+    "gemini",
+    "claude-3",
+    "claude-sonnet",
+    "gpt-4o",
+    "pixtral",
+    "vl",
+    "vision",
+)
 
 
 # Remap retired OpenRouter slugs and provide automatic fallback chain
@@ -151,10 +228,12 @@ async def acall_llm(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     api_key: Optional[str] = None,
+    image_urls: Optional[List[str]] = None,
 ) -> Tuple[str, int]:
     """
     Executes an async chat completion against OpenRouter with automatic model fallback
     if a specific provider/model slug returns 404 or is temporarily unavailable.
+    Supports native multimodal `image_url` blocks for vision-capable models.
     """
     client = get_async_client(api_key)
     temp = temperature if temperature is not None else runtime_settings.temperature
@@ -172,7 +251,7 @@ async def acall_llm(
             + "\n\n[... Context truncated automatically to fit model 32k context window ...]"
         )
 
-    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    base_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     if conversation_history:
         # Keep only recent turns, compact old code dumps, and cap total history characters to ~2,200 tokens
         history_chars = 0
@@ -186,9 +265,7 @@ async def acall_llm(
                     break
                 trimmed_history.append({"role": role, "content": content})
                 history_chars += len(content)
-        messages.extend(reversed(trimmed_history))
-
-    messages.append({"role": "user", "content": safe_user_prompt})
+        base_messages.extend(reversed(trimmed_history))
 
     # Ensure reasoning models (Gemini 2.5 Pro/Flash, DeepSeek R1) have sufficient token headroom
     # so internal thinking tokens never truncate multi-file code output mid-stream
@@ -196,13 +273,28 @@ async def acall_llm(
         max_tok = 8192
 
     # Ensure max_tok leaves ample room within 32,768 context limit
-    estimated_input_tok = sum(estimate_tokens_from_text(m["content"]) for m in messages)
+    estimated_input_tok = (
+        sum(estimate_tokens_from_text(str(m.get("content", ""))) for m in base_messages)
+        + estimate_tokens_from_text(safe_user_prompt)
+    )
     if estimated_input_tok + max_tok > 28000:
         max_tok = max(1024, min(max_tok, 28000 - estimated_input_tok))
 
     last_err: Optional[Exception] = None
     response = None
     for candidate in candidate_models:
+        supports_vision = bool(
+            image_urls and any(v_slug in candidate.lower() for v_slug in VISION_CAPABLE_SLUGS)
+        )
+        if supports_vision and image_urls:
+            user_content: Any = [
+                {"type": "text", "text": safe_user_prompt},
+                *[{"type": "image_url", "image_url": {"url": url}} for url in image_urls if url],
+            ]
+        else:
+            user_content = safe_user_prompt
+
+        messages = [*base_messages, {"role": "user", "content": user_content}]
         try:
             response = await client.chat.completions.create(
                 model=candidate,
@@ -214,7 +306,7 @@ async def acall_llm(
         except Exception as err:
             last_err = err
             err_str = str(err).lower()
-            # If context length exceeded (400), compress user prompt further and retry immediately
+            # If context length exceeded (400) or multimodal format rejected, retry with compressed text
             if "maximum context length" in err_str or "context length" in err_str or "400" in err_str:
                 try:
                     compressed_prompt = safe_user_prompt[:32000] + "\n\n[... Context compressed ...]"
@@ -259,6 +351,7 @@ async def run_raw_model_workflow(
     conversation_history: Optional[List[Dict[str, str]]] = None,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
+    image_urls: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Calls a raw model (Hermes 70B, Hermes 8B, Qwen Coder 32B, or Claude 3.5 Sonnet)
@@ -327,6 +420,7 @@ async def run_raw_model_workflow(
         conversation_history=conversation_history,
         temperature=temperature,
         max_tokens=max_tokens,
+        image_urls=image_urls,
     )
 
     step = {

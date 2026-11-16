@@ -684,6 +684,7 @@ export async function enhancePromptApi(payload: {
   workspace_name?: string;
   workspace_files?: string[];
   active_mode?: string;
+  attachments?: FileAttachment[];
 }): Promise<{
   summary: string;
   enhanced_prompt: string;
@@ -692,8 +693,22 @@ export async function enhancePromptApi(payload: {
   model_used: string;
   cost_usd: number;
 }> {
+  const serializedAttachments = (payload.attachments || []).map((att) => ({
+    filename: att.name,
+    content: att.content,
+    content_type:
+      att.type === "image"
+        ? `image/${att.extension === "jpg" ? "jpeg" : att.extension}`
+        : "text/plain",
+    size: att.sizeBytes,
+  }));
+
   return apiFetch("/api/prompt-enhancer/chat", {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      attachments:
+        serializedAttachments.length > 0 ? serializedAttachments : undefined,
+    }),
   });
 }

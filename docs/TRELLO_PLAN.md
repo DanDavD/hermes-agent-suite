@@ -207,7 +207,7 @@ Eliminate 20k+ token blowouts and guarantee 100% reliable local disk modificatio
 ---
 
 ## PR #11: feat/files-changed-diff-summary
-**Label:** `Frontend / UX` | **Status:** `Review (Ready to PR)` | **Branch:** `feat/files-changed-diff-summary`
+**Label:** `Frontend / UX` | **Status:** `Shipped & Merged to Main (4bf4b9a)` | **Branch:** `feat/files-changed-diff-summary`
 
 ### Objective
 Deliver an interactive collapsible diff summary bar below assistant responses, ultra-compact surgical `// Append:` & `// Prepend:` directives for batch multi-file modifications, and silent zero-code-dump chat rendering.
@@ -227,12 +227,12 @@ Deliver an interactive collapsible diff summary bar below assistant responses, u
 - [x] Cap untargeted workspace context injection to 2,800 tokens and ensure model headroom
 - [x] Enable backend module reloading in start-studio.sh
 - [x] Verify 13/13 unit tests pass and Next.js production build succeeds
-- [ ] Submit and merge PR #11 into main branch
+- [x] Submit and merge PR #11 into main branch (commit 4bf4b9a)
 
 ---
 
 ## PR #12: docs/architecture-and-engineering-logs
-**Label:** `Documentation` | **Status:** `Review (Ready to PR)` | **Branch:** `docs/architecture-and-engineering-logs`
+**Label:** `Documentation` | **Status:** `Shipped & Merged to Main (ec6e9fb)` | **Branch:** `docs/architecture-and-engineering-logs`
 
 ### Objective
 Publish formal Architecture Decision Records (ADRs), C4 system design diagrams, code review logs, and the living Engineering Problem & Resolution Log (`docs/ENGINEERING_PROBLEM_LOG.md`).
@@ -250,7 +250,30 @@ Publish formal Architecture Decision Records (ADRs), C4 system design diagrams, 
 - [x] Create C4 architecture diagram and 5-agent sequence flowcharts in ARCHITECTURE.md
 - [x] Author CODE_REVIEW_LOG.md and KANBAN_BOARD.md
 - [x] Update TRELLO_PLAN.md with PR #6 through PR #12 specifications
-- [ ] Submit and merge PR #12 into main branch
+- [x] Submit and merge PR #12 into main branch (commit ec6e9fb)
 
 ---
+
+## PR #13: feat/multimodal-clipboard-vision
+**Label:** `AI / Multi-Agent` | **Status:** `Shipped & Merged to Main` | **Branch:** `feat/multimodal-clipboard-vision`
+
+### Objective
+Integrate native clipboard image pasting (`Cmd+V`) and multimodal vision context analysis across both the chat execution pipeline and the in-composer `$0` Prompt Enhancer, extracting visual context, UI state, and error messages while eliminating binary-to-UTF8 token corruption.
+
+### Deliverables & Files
+- `backend/services/image_analyzer.py`: Binary image header parser (`extract_image_metadata`), attachment splitter (`split_attachments`), and OpenRouter multimodal vision analyzer (`analyze_images_with_vision`)
+- `backend/services/openrouter_client.py`: Binary UTF-8 corruption guard in `format_attachments_block()`, `build_multimodal_attachments_block()`, and native `image_url` routing in `acall_llm()`
+- `backend/routers/chat.py` & `backend/routers/prompt_enhancer.py`: Multimodal context injection for chat workflows (`team:dev-squad` and raw models) and vision-aware prompt enhancement
+- `frontend/src/components/BottomComposer.tsx`, `frontend/src/app/page.tsx`, & `frontend/src/lib/api.ts`: `Cmd+V` clipboard image capture (`handlePaste`), drag-and-drop image support, and thumbnail preview cards
+- `tests/test_image_analyzer.py`: Unit tests for PNG dimension extraction, binary corruption prevention, and multimodal context synthesis
+
+### Acceptance Checklist
+- [x] Implement clipboard image paste (Cmd+V) and drag-and-drop capture in BottomComposer.tsx
+- [x] Prevent binary base64 images from being decoded as UTF-8 replacement characters in format_attachments_block()
+- [x] Build image_analyzer.py to extract pixel dimensions, UI context, situation, and visible error messages via vision models
+- [x] Route native image_url payloads to vision-capable models and inject <image_context_analysis> blocks for text-only coding models
+- [x] Integrate pasted image analysis into the inline $0 Prompt Enhancer (/api/prompt-enhancer/chat)
+- [x] Add automated unit tests in tests/test_image_analyzer.py and document Problem #6 in ENGINEERING_PROBLEM_LOG.md
+- [x] Submit and merge PR #13 into main branch
+
 
