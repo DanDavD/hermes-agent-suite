@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.services.openrouter_client import acall_llm
+from backend.services.openrouter_client import acall_llm, build_multimodal_attachments_block
 
 logger = logging.getLogger("hermes.prompt_enhancer")
 
@@ -33,13 +33,15 @@ The user will run this prompt inside Hermes Studio's autonomous coding engine, w
 Standards for the Enhanced Prompt:
 1. ALWAYS output the enhanced prompt in ENGLISH, regardless of the input language.
 2. STRICT ZERO-EMOJI INVARIANT: Do NOT use ANY emojis, pictograms, or decorative icons anywhere in the prompt, headers, summary, explanation, or tips (ABSOLUTELY NO 🎯, 📋, 🛠️, ⚠️, 📤, 🚀, ✨, 🎮, etc.). Use pure, professional engineering text only.
-3. Structure the prompt concisely with clean, high-signal Markdown headers:
+3. MULTIMODAL IMAGE & CONTEXT INTEGRATION: If an `<image_context_analysis>` block or attached image is present, you MUST synthesize the extracted visual context, UI state, error messages, logs, and situational details directly into the enhanced prompt so the coding agent has full visibility into what was shown in the image.
+4. ZERO HALLUCINATED FILENAMES: Only reference specific file paths in `### Technical Context & Stack:` if they were explicitly provided in `Relevant Workspace Files`, mentioned by the user, or visible inside an attached image. NEVER invent placeholder filenames like `main_app.py` or `processor.py` if no workspace files are listed.
+5. Structure the prompt concisely with clean, high-signal Markdown headers:
    - ### Role & Objective: Explicit persona, mission, and clear Definition of Done.
-   - ### Technical Context & Stack: Reference only the specific files or stack relevant to the task.
-   - ### Step-by-Step Requirements: Logical, atomic implementation steps.
+   - ### Technical Context & Stack: Reference relevant files/stack (and summarized visual findings if an image was attached).
+   - ### Step-by-Step Requirements: Logical, atomic implementation steps combining the user's request with any extracted image context.
    - ### Constraints & Invariants: Token efficiency, strict typing, error boundaries, and zero placeholders.
-   - ### Expected Deliverables & Verification: Instruct the coding agent to apply changes directly to disk using `// File: <relative_path>` headers and surgical `SEARCH/REPLACE` blocks for existing files without outputting redundant "Before" code blocks or asking for manual screenshots.
-4. Tone: Concise, highly specific, actionable, direct, and optimized for minimal token usage.
+   - ### Expected Deliverables & Verification: Instruct the coding agent to apply changes directly to disk using `// File: <relative_path>`, `// Append: <relative_path>`, or surgical `SEARCH/REPLACE` blocks without outputting redundant "Before" code blocks.
+6. Tone: Concise, highly specific, actionable, direct, and optimized for minimal token usage.
 
 Response Format:
 You MUST respond with valid JSON enclosed in ```json ... ```:
@@ -87,11 +89,12 @@ class PromptEnhanceMessage(BaseModel):
 
 
 class PromptEnhanceRequest(BaseModel):
-    prompt: str = Field(..., description="Draft prompt or user instruction")
+    prompt: str = Field(default="", description="Draft prompt or user instruction")
     history: Optional[List[PromptEnhanceMessage]] = Field(default=None, description="Previous mini-chat messages")
     workspace_name: Optional[str] = Field(default=None, description="Active project/workspace name")
     workspace_files: Optional[List[str]] = Field(default=None, description="Sample of relevant files in workspace")
     active_mode: Optional[str] = Field(default=None, description="Currently selected workflow mode in Studio")
+    attachments: Optional[List[Dict[str, Any]]] = Field(default=None, description="Attached files or pasted clipboard images")
 
 
 class PromptEnhanceResponse(BaseModel):
@@ -105,9 +108,15 @@ class PromptEnhanceResponse(BaseModel):
 
 @router.post("/chat", response_model=PromptEnhanceResponse)
 async def enhance_prompt_chat(payload: PromptEnhanceRequest) -> PromptEnhanceResponse:
-    """Transforms a user prompt draft into an optimized English prompt using free models ($0)."""
-    if not payload.prompt.strip():
-        raise HTTPException(status_code=400, detail="Prompt draft cannot be empty.")
+    """Transforms a user prompt draft and any attached images into an optimized English prompt using free models ($0)."""
+    draft_prompt = (payload.prompt or "").strip()
+    if not draft_prompt and not payload.attachments:
+        raise HTTPException(
+            status_code=400,
+            detail="Prompt draft cannot be empty unless an image attachment is provided.",
+        )
+    if not draft_prompt:
+        draft_prompt = "Analyze the attached image(s), extract the problem or requirement shown, and resolve it."
 
     # Build context briefing
     context_parts: List[str] = []
@@ -116,15 +125,27 @@ async def enhance_prompt_chat(payload: PromptEnhanceRequest) -> PromptEnhanceRes
     if payload.active_mode:
         context_parts.append(f"Target Mode: {payload.active_mode}")
     if payload.workspace_files:
-        sample_files = payload.workspace_files[:12]
+        sample_files = payload.workspace_files[:16]
         context_parts.append(f"Relevant Workspace Files: {', '.join(sample_files)}")
+    else:
+        context_parts.append("Relevant Workspace Files: None linked (do NOT invent fake filenames)")
 
-    context_str = "\n".join(context_parts) if context_parts else "General Software / Game Development"
+    context_str = "\n".join(context_parts)
+
+    attachments_context = ""
+    image_urls: List[str] = []
+    if payload.attachments:
+        attachments_context, image_urls, _ = await build_multimodal_attachments_block(
+            attachments=payload.attachments,
+            user_prompt=draft_prompt,
+        )
 
     user_query = (
         f"Context from active IDE workspace:\n{context_str}\n\n"
-        f"User Draft Prompt to transform:\n\"\"\"\n{payload.prompt.strip()}\n\"\"\""
+        f"User Draft Prompt to transform:\n\"\"\"\n{draft_prompt}\n\"\"\""
     )
+    if attachments_context:
+        user_query += f"\n\n{attachments_context}"
 
     # Format history if provided
     formatted_history: List[Dict[str, str]] = []
@@ -143,6 +164,7 @@ async def enhance_prompt_chat(payload: PromptEnhanceRequest) -> PromptEnhanceRes
                 conversation_history=formatted_history,
                 temperature=0.3,
                 max_tokens=1400,
+                image_urls=image_urls,
             )
 
             # Extract JSON block

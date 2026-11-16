@@ -15,8 +15,8 @@ I developed Hermes Studio v2 to solve real bottlenecks in my daily software and 
 1. **Eliminating SaaS Subscription Lockouts and High Costs:**  
    Flat-rate $20/month subscriptions (such as Claude Pro) enforce aggressive usage caps that lock developers out after a few multi-file refactoring runs. By routing specialized frontier and open-weights models through OpenRouter (DeepSeek V3, Qwen 2.5 Coder 32B, Gemini 2.5 Flash, and Nous Hermes 4 70B), monthly API expenditures dropped by over 80% (averaging ~$3.50/month across hundreds of tasks) with zero downtime or tier lockouts.
 
-2. **In-Composer Prompt Enhancement (Zero Context-Switching):**  
-   Constantly switching browser tabs to draft, translate, or refine prompts in ChatGPT or Gemini interrupted my development flow. I built an integrated, zero-cost ($0.00) Prompt Enhancer directly into the composer. With a single click, it analyzes rough ideas in any language, enforces engineering invariants, and restructures them into rigorous English technical specifications using free-tier model chains.
+2. **In-Composer Prompt Enhancement & Multimodal Clipboard Vision (Zero Context-Switching):**  
+   Constantly switching browser tabs to draft, translate, or refine prompts—or to paste error screenshots—interrupted my development flow. I built an integrated, zero-cost ($0.00) Prompt Enhancer and native clipboard image pasting (`Cmd+V`) directly into the composer. Pasting a screenshot extracts UI context, error logs, and situational details via vision models and synthesizes them with your prompt in one step.
 
 3. **Autonomous Local Disk Application vs. Copy-Paste Chores:**  
    Standard AI assistants output isolated code blocks that require tedious manual copying, file creation, and syntax sanity checks. Hermes Studio intercepts structured directives (`// File:`, `// Append:`, `// Prepend:`, and surgical `SEARCH/REPLACE` diff blocks) and patches local files directly on disk, showing clean diff telemetry and reflecting immediately in GitHub Desktop.
@@ -109,7 +109,7 @@ This script automatically:
 
 ### Running Automated Tests
 ```bash
-# Backend unit & integration test suite (13 tests)
+# Backend unit & integration test suite (17 tests)
 source .venv/bin/activate
 python -m unittest discover -s tests -v
 
@@ -122,7 +122,7 @@ cd frontend && npm run build
 ## Repository Documentation
 
 Comprehensive architectural design records, security models, and problem logs are maintained in `docs/`:
-- `docs/ENGINEERING_PROBLEM_LOG.md`: Detailed root-cause analyses and verification benchmarks for all five engineering challenges solved.
+- `docs/ENGINEERING_PROBLEM_LOG.md`: Detailed root-cause analyses and verification benchmarks for all six engineering challenges solved.
 - `docs/ARCHITECTURE.md`: Complete C4 diagrams, sequence flows, and filesystem threat models.
 - `docs/CODE_REVIEW_LOG.md`: Cross-stack contract verification and security checklists.
 - `docs/KANBAN_BOARD.md`: Agile sprint breakdown, velocity metrics, and ticket completion statuses.

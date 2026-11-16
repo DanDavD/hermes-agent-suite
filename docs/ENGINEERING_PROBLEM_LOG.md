@@ -225,4 +225,31 @@ When the user prompted Hermes Studio to edit 10 random files in `UnityGameJam` b
 4. **Hot Reload Enabled in `start-studio.sh`:**
    - Added `--reload --reload-dir backend` to `uvicorn` in `start-studio.sh` and restarted the live service.
 
+---
+
+## Problem #6: Clipboard Image Paste (`Cmd+V`), Binary-to-UTF8 Token Corruption, and Multimodal Vision Context Integration
+
+### 1. Symptoms Observed
+1. **No Clipboard Paste (`Cmd+V`) Support in Composer:**
+   - Pasting a screenshot from the macOS clipboard (`Cmd+V`) into `BottomComposer.tsx` had no effect because the `<textarea>` lacked an `onPaste` handler inspecting `e.clipboardData.items` for `image/*` blobs.
+2. **Binary Image-to-UTF8 Token Corruption in `format_attachments_block()`:**
+   - When an image (`data:image/png;base64,...`) was attached, `format_attachments_block()` in `backend/services/openrouter_client.py` called `base64.b64decode(b64_part).decode("utf-8", errors="replace")`. Because `errors="replace"` never raises an exception, a 200 KB PNG binary was converted into ~200,000 characters of `\ufffdPNG...` replacement characters inside `<attached_file>`, exhausting the token budget with unreadable binary noise and providing zero visual understanding.
+3. **Prompt Enhancer Ignored Attached Images & Hallucinated Generic Filenames:**
+   - Clicking the inline Prompt Enhancer button (`✦`) did not forward attached images to `/api/prompt-enhancer/chat`, and when no workspace was linked, the Prompt Enhancer invented placeholder filenames (`image_analysis.py`, `prompt_processor.py`, `main_app.py`).
+
+### 2. Engineering Solutions Implemented
+1. **Dedicated Multimodal Vision & Metadata Service (`backend/services/image_analyzer.py`):**
+   - Implemented `is_image_attachment()`, `extract_image_metadata()` (pure-Python binary header inspection for PNG, JPEG, GIF, and WebP pixel dimensions and byte size), `split_attachments()`, and `analyze_images_with_vision()`.
+   - `analyze_images_with_vision()` dispatches pasted/attached images to vision-capable models (`google/gemini-2.0-flash-exp:free`, `google/gemini-2.5-flash`, `openai/gpt-4o-mini`, `anthropic/claude-3.5-sonnet`) to extract a structured `<image_context_analysis>` block containing:
+     1. **Context & Situation** (UI state, active app, or scene shown).
+     2. **Extracted Text, Messages & Errors** (verbatim transcription of error logs, stack traces, chat messages, or code).
+     3. **Key Visual Details & Diagnosis** combined with the user's prompt.
+2. **Binary Corruption Guard & Native Multimodal Routing (`backend/services/openrouter_client.py` & `backend/routers/chat.py`):**
+   - Updated `format_attachments_block()` to detect image attachments and binary files (`\ufffd` ratio check) so binary image bytes are never decoded as UTF-8 text.
+   - Added `build_multimodal_attachments_block()` and updated `acall_llm()` to pass native OpenRouter `image_url` content parts to vision-capable models while injecting the structured `<image_context_analysis>` block for all text-only coding models (`deepseek-v3`, `deepseek-r1`, `qwen-coder-32b`) and multi-agent squads (`team:dev-squad`).
+3. **Clipboard Paste (`Cmd+V`) & Vision-Aware Prompt Enhancer (`frontend/src/components/BottomComposer.tsx`, `frontend/src/app/page.tsx`, `backend/routers/prompt_enhancer.py`):**
+   - Added `onPaste={handlePaste}` and drag-and-drop (`onDrop={handleDrop}`) in `BottomComposer.tsx` so `Cmd+V` immediately attaches clipboard screenshots with a thumbnail preview (`Vision Image · KB`).
+   - Updated `/api/prompt-enhancer/chat` and `enhancePromptApi()` to accept `attachments`, synthesize `<image_context_analysis>` into the enhanced English prompt, and strictly forbid inventing placeholder filenames when no workspace files are linked.
+
+
 

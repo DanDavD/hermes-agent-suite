@@ -577,7 +577,13 @@ export default function HermesWorkstationPage() {
   };
 
   const handleEnhanceComposerPrompt = async () => {
-    if (!prompt.trim() || isEnhancingComposerPrompt || isSending) return;
+    if (
+      (!prompt.trim() && attachments.length === 0) ||
+      isEnhancingComposerPrompt ||
+      isSending
+    ) {
+      return;
+    }
     setIsEnhancingComposerPrompt(true);
     try {
       const res = await enhancePromptApi({
@@ -585,14 +591,21 @@ export default function HermesWorkstationPage() {
         workspace_name: workspace?.project_name,
         workspace_files: workspace?.files?.map((f) => f.relative_path),
         active_mode: activeMode,
+        attachments,
       });
       if (res && res.enhanced_prompt) {
         setPrompt(res.enhanced_prompt);
-        setToastBanner("✨ Prompt upgraded to structured English architecture ($0)!");
+        setToastBanner(
+          attachments.some((a) => a.type === "image")
+            ? "Prompt enhanced with visual image analysis ($0)."
+            : "Prompt upgraded to structured English architecture ($0)."
+        );
         setTimeout(() => setToastBanner(null), 3500);
       }
     } catch (err: any) {
-      setToastBanner(`⚠️ Failed to upgrade prompt: ${err.message || "Network error"}`);
+      setToastBanner(
+        `Failed to upgrade prompt: ${err.message || "Network error"}`
+      );
       setTimeout(() => setToastBanner(null), 4000);
     } finally {
       setIsEnhancingComposerPrompt(false);
@@ -919,23 +932,40 @@ export default function HermesWorkstationPage() {
 
                       {/* User Attachments Display */}
                       {msg.attachments && msg.attachments.length > 0 && (
-                        <div className="flex flex-wrap gap-2 mb-2">
-                          {msg.attachments.map((att, idx) => (
-                            <div
-                              key={att.id || idx}
-                              className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#1A1A1A] border border-zinc-800 text-xs font-mono text-zinc-300"
-                            >
-                              {att.type === "image" && att.previewUrl ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img
-                                  src={att.previewUrl}
-                                  alt={att.name}
-                                  className="w-6 h-6 rounded object-cover"
-                                />
-                              ) : null}
-                              <span>{att.name}</span>
-                            </div>
-                          ))}
+                        <div className="flex flex-wrap gap-2 mb-2.5">
+                          {msg.attachments.map((att, idx) => {
+                            const imgSrc =
+                              att.previewUrl ||
+                              (att.content?.startsWith("data:image/")
+                                ? att.content
+                                : undefined);
+                            if (att.type === "image" && imgSrc) {
+                              return (
+                                <div
+                                  key={att.id || idx}
+                                  className="flex flex-col gap-1 rounded-xl bg-[#1A1A1A] border border-zinc-800 p-1.5"
+                                >
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={imgSrc}
+                                    alt={att.name}
+                                    className="max-h-44 max-w-[260px] rounded-lg object-contain border border-zinc-800/80"
+                                  />
+                                  <span className="text-[10px] font-mono text-zinc-400 truncate max-w-[240px] px-1">
+                                    {att.name}
+                                  </span>
+                                </div>
+                              );
+                            }
+                            return (
+                              <div
+                                key={att.id || idx}
+                                className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#1A1A1A] border border-zinc-800 text-xs font-mono text-zinc-300"
+                              >
+                                <span>{att.name}</span>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
 
